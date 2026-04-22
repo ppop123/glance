@@ -56,11 +56,18 @@ function markFailure(el) {
 }
 
 /* ── Global progress pill ─────────────────────────────────────────────────
- * One floating status badge, bottom-right. Replaces the per-unit spinners that
- * turned dense pages (Wikipedia ~600 units) into visual noise. Click to cancel. */
+ * One floating status badge, bottom-right. Replaces per-unit spinners.
+ * Displays LAZILY — only appears if the current translation burst is still
+ * pending after PILL_SHOW_DELAY_MS. Fast bursts (incremental scroll translating
+ * 2-3 tweets in <600ms) never show the pill at all. Large initial scans that
+ * take seconds do show it. Click to cancel. */
+const PILL_SHOW_DELAY_MS = 600;
+const PILL_DONE_LINGER_MS = 1200;
+
 let pillTotal = 0;
 let pillDone = 0;
 let pillEl = null;
+let pillShowTimer = null;
 let pillHideTimer = null;
 
 function pillEnsure() {
@@ -96,17 +103,32 @@ function pillRender() {
 function pillAdd(n) {
   if (n <= 0) return;
   pillTotal += n;
-  pillEnsure();
-  pillRender();
+  if (pillEl) { pillRender(); return; }
+  // Schedule lazy reveal. If total finishes before the timer fires, it's cancelled
+  // in pillAdvance and the pill never appears.
+  if (pillShowTimer) return;
+  pillShowTimer = setTimeout(() => {
+    pillShowTimer = null;
+    if (pillDone >= pillTotal) return;  // finished during the grace window
+    pillEnsure();
+    pillRender();
+  }, PILL_SHOW_DELAY_MS);
 }
 
 function pillAdvance(n) {
   if (n <= 0) return;
   pillDone += n;
-  pillRender();
+  if (pillEl) pillRender();
   if (pillDone >= pillTotal) {
-    if (pillHideTimer) clearTimeout(pillHideTimer);
-    pillHideTimer = setTimeout(pillReset, 1500);
+    if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
+    if (pillEl) {
+      if (pillHideTimer) clearTimeout(pillHideTimer);
+      pillHideTimer = setTimeout(pillReset, PILL_DONE_LINGER_MS);
+    } else {
+      // Quietly reset counters — nothing was ever shown.
+      pillTotal = 0;
+      pillDone = 0;
+    }
   }
 }
 
@@ -114,6 +136,7 @@ function pillReset() {
   pillTotal = 0;
   pillDone = 0;
   if (pillEl) { pillEl.remove(); pillEl = null; }
+  if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
 }
 
