@@ -101,6 +101,35 @@ function extractPlainText(el) {
   return (el.textContent || "").replace(/\s+/g, " ").trim();
 }
 
+/** Treat whitespace-equivalent strings as "no translation happened". LLMs often
+ * echo source untouched when content is all code, identifiers, or proper nouns.
+ * Normalizing collapses spacing and Unicode fullwidth punctuation that's
+ * semantically identical but byte-different. */
+function isNoOpTranslation(src, tr) {
+  if (!tr) return true;
+  // Fold fullwidth CJK punctuation to their ASCII equivalents so that
+  // "a, b, c" vs "a、b、c" counts as the same — the LLM only localized
+  // the separators, no real translation happened.
+  const norm = (s) => String(s || "")
+    .replace(/[，、]/g, ",")
+    .replace(/[。．]/g, ".")
+    .replace(/[：]/g, ":")
+    .replace(/[；]/g, ";")
+    .replace(/[！]/g, "!")
+    .replace(/[？]/g, "?")
+    .replace(/[（]/g, "(")
+    .replace(/[）]/g, ")")
+    .replace(/[【]/g, "[")
+    .replace(/[】]/g, "]")
+    // Collapse whitespace AND strip spacing around punctuation — English uses
+    // "a, b" while Chinese uses "a、b" with no surrounding space.
+    .replace(/\s*([,.;:!?()[\]])\s*/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return norm(src) === norm(tr);
+}
+
 /* ── Global progress pill ─────────────────────────────────────────────────
  * One floating status badge, bottom-right. Replaces per-unit spinners.
  * Displays LAZILY — only appears if the current translation burst is still
@@ -281,7 +310,12 @@ async function translateUnits(units) {
                 else renderPermanentFailure(u.el);
               } else {
                 u.el.removeAttribute(FAIL_ATTR);
-                appendTranslation(u.el, it.translation);
+                // No-op translation: the LLM returned the source unchanged (code
+                // lists, proper nouns, pure numbers, etc.). Don't duplicate the
+                // line — the user's unit is already visible as-is.
+                if (!isNoOpTranslation(u.text, it.translation)) {
+                  appendTranslation(u.el, it.translation);
+                }
               }
             }
           }
