@@ -15,6 +15,7 @@ async function loadPrefs() {
     subDefaultSeconds: 60,
     subBilingual: true,
     subPreferDownload: true,
+    glossary: [],
   });
   $("#serverUrl").value = p.serverUrl;
   $("#targetLang").value = p.targetLang;
@@ -23,6 +24,22 @@ async function loadPrefs() {
   $("#subDefaultSeconds").value = p.subDefaultSeconds;
   $("#subBilingual").checked = !!p.subBilingual;
   $("#subPreferDownload").checked = !!p.subPreferDownload;
+  $("#glossary").value = (p.glossary || []).map(([src, dst]) => `${src} => ${dst}`).join("\n");
+}
+
+/** Parse glossary textarea — lines like "src => dst" or "src → dst". Lenient. */
+function parseGlossary(raw) {
+  const out = [];
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const m = t.match(/^(.*?)\s*(?:=>|→|->)\s*(.*?)\s*$/);
+    if (!m) continue;
+    const src = m[1].trim();
+    const dst = m[2].trim();
+    if (src && dst) out.push([src, dst]);
+  }
+  return out;
 }
 
 function parseAutoSites(raw) {
@@ -84,6 +101,7 @@ $("#autoSites").addEventListener("change", (e) => save("autoSites", parseAutoSit
 $("#subDefaultSeconds").addEventListener("change", (e) => save("subDefaultSeconds", Math.max(5, parseInt(e.target.value || "60", 10))));
 $("#subBilingual").addEventListener("change", (e) => save("subBilingual", e.target.checked));
 $("#subPreferDownload").addEventListener("change", (e) => save("subPreferDownload", e.target.checked));
+$("#glossary").addEventListener("change", (e) => save("glossary", parseGlossary(e.target.value)));
 
 $("#clearCache").addEventListener("click", async () => {
   try {

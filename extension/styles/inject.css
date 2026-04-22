@@ -90,3 +90,111 @@
 @media (prefers-reduced-motion: reduce) {
   .fanyi-progress-spin { animation-duration: 2s; }
 }
+
+/* Selection translation — tiny "译" pill that appears next to a text selection */
+.fanyi-sel-btn {
+  position: absolute !important;
+  z-index: 2147483647 !important;
+  width: 24px; height: 24px;
+  display: none;
+  align-items: center; justify-content: center;
+  background: var(--fanyi-accent); color: #fff;
+  border-radius: 12px;
+  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.12s ease;
+}
+.fanyi-sel-btn:hover { transform: scale(1.08); }
+
+/* Result popover shown when the "译" button is clicked */
+.fanyi-sel-pop {
+  position: absolute !important;
+  z-index: 2147483647 !important;
+  max-width: 360px;
+  min-width: 120px;
+  display: none;
+  padding: 10px 12px;
+  background: rgba(22, 28, 36, 0.96);
+  color: #fff;
+  border-radius: 10px;
+  font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+.fanyi-sel-pop-text { color: #fff; }
+.fanyi-sel-pop-spin {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: fanyi-spin 0.7s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* Floating action button — always-on translate toggle in bottom-right */
+.fanyi-fab {
+  position: fixed !important;
+  bottom: 16px !important;
+  right: 16px !important;
+  z-index: 2147483645 !important;
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(22, 28, 36, 0.88);
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  user-select: none;
+  font: 600 16px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  transition: transform 0.15s, background 0.2s, color 0.2s;
+  opacity: 0.55;
+}
+.fanyi-fab:hover { opacity: 1; transform: translateY(-1px); }
+.fanyi-fab.fanyi-fab-on {
+  background: var(--fanyi-accent);
+  color: #fff;
+  opacity: 0.95;
+}
+.fanyi-fab-label { display: block; }
+
+/* When the progress pill is also visible, stack FAB above it */
+body:has(.fanyi-progress) .fanyi-fab { bottom: 64px !important; }
+
+.fanyi-fab-menu {
+  position: fixed !important;
+  bottom: 66px !important;
+  right: 16px !important;
+  z-index: 2147483646 !important;
+  display: none;
+  flex-direction: column;
+  min-width: 180px;
+  background: rgba(22, 28, 36, 0.96);
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font: 400 13px/1.3 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+}
+.fanyi-fab-menu button {
+  appearance: none;
+  background: transparent;
+  color: #fff;
+  border: none;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.fanyi-fab-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+/* Offset menu when pill present */
+body:has(.fanyi-progress) .fanyi-fab-menu { bottom: 114px !important; }

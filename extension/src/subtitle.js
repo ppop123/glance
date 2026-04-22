@@ -322,6 +322,78 @@ async function transcribeViaUrlStreaming(video, url, { language = null, onProgre
   };
 }
 
+/** Try to use the video's existing native TextTrack (YouTube CC, etc.) instead of ASR.
+ * Returns {track, count} or null if no usable track is found.
+ *
+ * Reason this matters: YouTube / Netflix / Vimeo / Bilibili all ship real captions
+ * for most content. Running Whisper over audio we already have perfect captions for
+ * is wasted compute AND strictly worse quality.
+ *
+ * Most players load cue data lazily — setting mode to "hidden" is enough to force
+ * it for HLS/DASH-loaded VTT; for YouTube the user must have clicked CC once.
+ */
+async function tryNativeCaptions(video, { translate, targetLang, status }) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const candidates = () =>
+    Array.from(video.textTracks || []).filter(
+      (t) =>
+        t.label !== "fanyi" &&
+        (t.kind === "subtitles" || t.kind === "captions")
+    );
+
+  // Nudge all candidate tracks to "hidden" so the player loads cues. Takes effect
+  // within a frame or two on most players.
+  for (const t of candidates()) {
+    if (t.mode === "disabled") t.mode = "hidden";
+  }
+
+  let picked = null;
+  for (let i = 0; i < 10; i++) {
+    picked = candidates().find((t) => t.cues && t.cues.length > 0);
+    if (picked) break;
+    await sleep(120);
+  }
+  if (!picked) return null;
+
+  status({ phase: "native-captions", source: picked.language || picked.label });
+  const rawCues = Array.from(picked.cues).map((c) => ({
+    start: c.startTime,
+    end: c.endTime,
+    text: c.text || "",
+  }));
+  if (!rawCues.length) return null;
+
+  let finalCues = rawCues;
+  if (translate && targetLang) {
+    status({ phase: "translating", total: rawCues.length });
+    const base = await serverBase();
+    const resp = await chrome.runtime.sendMessage({
+      type: "fanyi:fetch",
+      url: `${base}/translate`,
+      method: "POST",
+      body: {
+        items: rawCues.map((c) => ({ text: c.text })),
+        target_lang: targetLang,
+      },
+    });
+    if (resp?.ok && Array.isArray(resp.data?.translations)) {
+      finalCues = rawCues.map((c, i) => ({
+        ...c,
+        text: resp.data.translations[i] || c.text,
+      }));
+    }
+  }
+
+  // Hide the native track so only our "fanyi" track shows (avoid duplicate captions)
+  picked.mode = "disabled";
+
+  status({ phase: "attaching", cues: finalCues.length });
+  const track = attachCues(video, finalCues, { label: "fanyi" });
+  status({ phase: "done", cues: finalCues.length, source: "native" });
+  return { track, count: finalCues.length };
+}
+
 function canDownload(url) {
   try {
     const u = new URL(url);
@@ -357,6 +429,15 @@ export async function transcribeVideo(video, opts = {}, onStatusArg = null) {
   const status = (obj) => { onStatus(obj); if (toast) applyToast(toast, obj, maxSeconds); };
 
   try {
+    // Fast path: video already has a native caption/subtitle track (YouTube CC,
+    // Bilibili CC, Vimeo captions). Use its cues directly — zero Whisper cost,
+    // way better accuracy than ASR, and ~instant.
+    const native = await tryNativeCaptions(video, { translate, targetLang, status });
+    if (native) {
+      if (toast) toast.done(`${native.count} 条原生字幕`);
+      return { track: native.track, cues: [] };
+    }
+
     const fetchUrl = sourceUrl || location.href;
 
     // Streaming path: for yt-dlp-supported URLs, attach cues as segments complete.

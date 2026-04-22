@@ -1,7 +1,7 @@
 // Main translation engine. Exported: boot(), toggle(), enable(), disable(), retranslate().
 // Loaded via dynamic import from content_guard.js.
 
-import { translateStream } from "./lib/client.js";
+import { translateStream, translateOne } from "./lib/client.js";
 import { appendTranslation, markUnit, removeAllTranslations, sameLanguageAs, isStale, clearUnit, MARK_ATTR } from "./lib/walker.js";
 import { pickPrimaryVideo, transcribeVideo } from "./subtitle.js";
 
@@ -17,6 +17,7 @@ let state = {
   stylesInjected: false,
   target: DEFAULT_TARGET,
   model: null,           // null → server default
+  glossary: null,        // [[src, dst], ...] or null
 };
 
 // ---- Style injection --------------------------------------------------------
@@ -182,6 +183,7 @@ async function translateUnits(units) {
         topic: state.adapter.topic || null,
         model: state.model,
         target: state.target,
+        glossary: state.glossary,
         signal: ac.signal,
         onChunk: (data) => {
           if (!state.enabled || !data?.items) return;
@@ -248,6 +250,199 @@ function runTranscribe(opts, respond) {
   })();
 }
 
+/* ── Selection translation ───────────────────────────────────────────────
+ * Classic "highlight → tiny button → popover with translation" flow. Works
+ * independent of page-translate state so it's useful even when auto-translate
+ * is off on this site. */
+const MIN_SEL_LEN = 2;
+const MAX_SEL_LEN = 2000;
+let selBtnEl = null;
+let selPopEl = null;
+let selCurrentText = "";
+let selChangeTimer = null;
+
+function selEnsureBtn() {
+  if (selBtnEl) return;
+  selBtnEl = document.createElement("div");
+  selBtnEl.className = "fanyi-sel-btn";
+  selBtnEl.setAttribute("data-fanyi-skip", "1");
+  selBtnEl.setAttribute("data-fanyi-wrapper", "1");
+  selBtnEl.setAttribute("role", "button");
+  selBtnEl.setAttribute("aria-label", "翻译选中");
+  selBtnEl.title = "翻译选中";
+  selBtnEl.textContent = "译";
+  // don't let mousedown collapse the selection
+  selBtnEl.addEventListener("mousedown", (e) => e.preventDefault());
+  selBtnEl.addEventListener("click", selOnClick);
+  document.documentElement.appendChild(selBtnEl);
+}
+
+function selHideBtn() { if (selBtnEl) selBtnEl.style.display = "none"; }
+
+function selShowBtnAt(rect) {
+  selEnsureBtn();
+  selBtnEl.style.display = "flex";
+  selBtnEl.style.top = `${window.scrollY + rect.bottom + 6}px`;
+  selBtnEl.style.left = `${window.scrollX + Math.max(rect.right - 22, rect.left)}px`;
+}
+
+function selOnChange() {
+  if (selChangeTimer) clearTimeout(selChangeTimer);
+  selChangeTimer = setTimeout(() => {
+    selChangeTimer = null;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) { selHideBtn(); return; }
+    const text = (sel.toString() || "").trim();
+    if (text.length < MIN_SEL_LEN || text.length > MAX_SEL_LEN) { selHideBtn(); return; }
+    const anchor = sel.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel.anchorNode?.parentElement;
+    if (anchor?.closest?.("[data-fanyi-skip], [data-fanyi-wrapper]")) { selHideBtn(); return; }
+    let range;
+    try { range = sel.getRangeAt(0); } catch { selHideBtn(); return; }
+    const rect = range.getBoundingClientRect();
+    if (!rect.width && !rect.height) { selHideBtn(); return; }
+    selCurrentText = text;
+    selShowBtnAt(rect);
+  }, 120);
+}
+
+async function selOnClick(ev) {
+  ev.preventDefault(); ev.stopPropagation();
+  const text = selCurrentText;
+  if (!text) return;
+  const btnRect = selBtnEl.getBoundingClientRect();
+  selHideBtn();
+  selShowPop(btnRect.left, btnRect.top, "翻译中…", true);
+  try {
+    const tr = await translateOne(text, {
+      site: location.hostname,
+      model: state.model,
+      target: state.target,
+      glossary: state.glossary,
+    });
+    selShowPop(btnRect.left, btnRect.top, tr || "(无结果)", false);
+  } catch (e) {
+    selShowPop(btnRect.left, btnRect.top, `翻译失败：${e?.message || e}`, false);
+  }
+}
+
+function selShowPop(x, y, text, loading) {
+  if (!selPopEl) {
+    selPopEl = document.createElement("div");
+    selPopEl.className = "fanyi-sel-pop";
+    selPopEl.setAttribute("data-fanyi-skip", "1");
+    selPopEl.setAttribute("data-fanyi-wrapper", "1");
+    selPopEl.setAttribute("role", "dialog");
+    document.documentElement.appendChild(selPopEl);
+  }
+  const html = loading
+    ? `<span class="fanyi-sel-pop-spin"></span><span class="fanyi-sel-pop-text">${selEscape(text)}</span>`
+    : `<div class="fanyi-sel-pop-text">${selEscape(text)}</div>`;
+  selPopEl.innerHTML = html;
+  selPopEl.style.display = "block";
+  selPopEl.style.top = `${window.scrollY + y + 24}px`;
+  selPopEl.style.left = `${window.scrollX + Math.max(8, x - 120)}px`;
+}
+
+function selHidePop() { if (selPopEl) selPopEl.style.display = "none"; }
+
+function selEscape(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function selInstall() {
+  document.addEventListener("selectionchange", selOnChange);
+  document.addEventListener("mousedown", (ev) => {
+    const t = ev.target;
+    if (t && t.closest?.(".fanyi-sel-btn, .fanyi-sel-pop")) return;
+    selHidePop();
+  }, true);
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { selHidePop(); selHideBtn(); }
+  });
+}
+
+/* ── Floating Action Button ──────────────────────────────────────────────
+ * Always-on corner entry point to toggle translation on the current page. */
+let fabEl = null;
+let fabMenuEl = null;
+
+function fabEnsure() {
+  if (fabEl) return;
+  fabEl = document.createElement("div");
+  fabEl.className = "fanyi-fab";
+  fabEl.setAttribute("data-fanyi-skip", "1");
+  fabEl.setAttribute("data-fanyi-wrapper", "1");
+  fabEl.setAttribute("role", "button");
+  fabEl.setAttribute("aria-label", "翻译此页");
+  fabEl.innerHTML = `<span class="fanyi-fab-label">译</span>`;
+  fabEl.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); toggle(); fabCloseMenu(); fabRender(); });
+  fabEl.addEventListener("contextmenu", (ev) => { ev.preventDefault(); fabToggleMenu(); });
+  document.documentElement.appendChild(fabEl);
+  fabRender();
+}
+
+function fabRender() {
+  if (!fabEl) return;
+  if (state.enabled) {
+    fabEl.classList.add("fanyi-fab-on");
+    fabEl.title = "关闭翻译（右键 = 更多）";
+  } else {
+    fabEl.classList.remove("fanyi-fab-on");
+    fabEl.title = "翻译此页（右键 = 更多）";
+  }
+}
+
+function fabToggleMenu() {
+  if (fabMenuEl && fabMenuEl.style.display !== "none") { fabCloseMenu(); return; }
+  if (!fabMenuEl) {
+    fabMenuEl = document.createElement("div");
+    fabMenuEl.className = "fanyi-fab-menu";
+    fabMenuEl.setAttribute("data-fanyi-skip", "1");
+    fabMenuEl.setAttribute("data-fanyi-wrapper", "1");
+    document.documentElement.appendChild(fabMenuEl);
+    fabMenuEl.addEventListener("click", fabOnMenuClick);
+  }
+  const host = location.hostname.toLowerCase();
+  const isAuto = (state._autoSites || []).includes(host);
+  fabMenuEl.innerHTML = `
+    <button data-act="toggle">${state.enabled ? "关闭翻译" : "翻译此页"}</button>
+    <button data-act="auto">${isAuto ? "不再自动翻译本站" : "始终自动翻译本站"}</button>
+    <button data-act="options">设置…</button>
+  `;
+  fabMenuEl.style.display = "flex";
+}
+
+function fabCloseMenu() { if (fabMenuEl) fabMenuEl.style.display = "none"; }
+
+async function fabOnMenuClick(ev) {
+  const b = ev.target.closest("button[data-act]");
+  if (!b) return;
+  const act = b.dataset.act;
+  fabCloseMenu();
+  if (act === "toggle") { await toggle(); fabRender(); return; }
+  if (act === "auto") {
+    const host = location.hostname.toLowerCase();
+    const current = Array.isArray(state._autoSites) ? state._autoSites : [];
+    const next = current.includes(host) ? current.filter((h) => h !== host) : [...current, host];
+    state._autoSites = next;
+    await chrome.storage.sync.set({ autoSites: next });
+    if (next.includes(host) && !state.enabled) { await enable(); fabRender(); }
+  }
+  if (act === "options") { chrome.runtime.sendMessage({ type: "fanyi:open-options" }).catch(() => chrome.runtime.openOptionsPage?.()); }
+}
+
+function fabInstall() {
+  if (window.top !== window) return;            // only top frame
+  if (!/^https?:/.test(location.href)) return;  // not on chrome:// etc.
+  fabEnsure();
+  // Close menu on outside click
+  document.addEventListener("mousedown", (ev) => {
+    const t = ev.target;
+    if (t && t.closest?.(".fanyi-fab, .fanyi-fab-menu")) return;
+    fabCloseMenu();
+  }, true);
+}
+
 export async function boot() {
   ensureStyles();
   state.adapter = await pickAdapter();
@@ -285,19 +480,26 @@ export async function boot() {
   });
 
   // Load user prefs from storage.
-  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model"]).catch(() => ({}));
+  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model", "glossary"]).catch(() => ({}));
   const autoSites = Array.isArray(prefs.autoSites) && prefs.autoSites.length ? prefs.autoSites : DEFAULT_AUTO_SITES;
   state.target = prefs.targetLang || DEFAULT_TARGET;
   state.model  = prefs.model || null;
+  state.glossary = Array.isArray(prefs.glossary) && prefs.glossary.length ? prefs.glossary : null;
 
   // Re-read on the fly when user changes settings in popup.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "sync") return;
     if (changes.targetLang) state.target = changes.targetLang.newValue || DEFAULT_TARGET;
     if (changes.model)      state.model  = changes.model.newValue || null;
+    if (changes.glossary)   state.glossary = Array.isArray(changes.glossary.newValue) && changes.glossary.newValue.length ? changes.glossary.newValue : null;
   });
 
   console.info("[fanyi] boot: adapter=%s site=%s target=%s model=%s auto=%o", state.adapter.name, state.site, state.target, state.model || "(default)", autoSites);
+
+  state._autoSites = autoSites;
+  // Selection translation is independent of page-translate mode — install once.
+  if (window.top === window) { selInstall(); fabInstall(); }
+
   if (state.site && autoSites.includes(state.site)) enable();
 }
 
@@ -305,6 +507,7 @@ export async function enable() {
   if (state.enabled) return;
   state.enabled = true;
   document.documentElement.setAttribute("data-fanyi-state", "dual");
+  fabRender();
 
   const ad = state.adapter;
   console.info("[fanyi] enable: adapter=%s", ad.name);
@@ -333,6 +536,7 @@ export function disable() {
   state.inflight.clear();
   removeAllTranslations();
   pillReset();
+  fabRender();
 }
 
 export async function toggle() {

@@ -25,7 +25,7 @@ SYSTEM_BASE = (
     " (2) Start each translated item with the exact same marker (⟦1⟧, ⟦2⟧, ...).\n"
     " (3) Separate items with a line containing exactly ===.\n"
     " (4) Preserve ALL line breaks inside an item. Do not merge paragraphs.\n"
-    " (5) Do not translate code, URLs, @mentions, #hashtags, emoji.\n"
+    " (5) Do not translate code, URLs, @mentions, #hashtags, emoji. Text inside `single backticks` or between ```triple backticks``` is CODE — copy it VERBATIM including the backticks; never translate or reformat inner content.\n"
     " (6) No explanations, no commentary, no leading text.\n"
     " (7) If an item is ALREADY in {target_lang}, output it unchanged with its marker.\n"
     " (8) IMPORTANT: Japanese text (contains hiragana/katakana OR Japanese-specific vocabulary even if kanji-heavy) and Korean text (contains hangul) are NOT Chinese — always translate them to {target_lang}.\n"
@@ -379,6 +379,7 @@ def build_messages(
     target_lang: str,
     site: str | None = None,
     topic: str | None = None,
+    glossary: list[tuple[str, str]] | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """Returns (messages, resolved_topic, reason).
     `reason` is one of: 'explicit' | 'content' | 'host' | 'none'."""
@@ -386,6 +387,16 @@ def build_messages(
     sys = SYSTEM_BASE.format(target_lang=target_lang)
     if resolved and resolved in TOPIC_HINTS:
         sys = sys + "\n\nContext: " + TOPIC_HINTS[resolved]
+    if glossary:
+        # Only attach the subset that actually appears in this batch — keeps tokens tight.
+        joined = "\n".join(texts)
+        active = [(s, d) for s, d in glossary if s and d and s in joined]
+        if active:
+            lines = "\n".join(f"  {s!r} → {d!r}" for s, d in active)
+            sys = sys + (
+                f"\n\nGlossary (force these exact translations; case-insensitive match, "
+                f"preserve original spacing/punctuation around matched terms):\n{lines}"
+            )
     msgs = [
         {"role": "system", "content": sys},
         {"role": "user", "content": format_batch(texts)},

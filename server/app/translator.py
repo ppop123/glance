@@ -112,6 +112,7 @@ class Translator:
         model: str | None = None,
         site: str | None = None,
         topic: str | None = None,
+        glossary: list[tuple[str, str]] | None = None,
     ) -> TranslateResult:
         t0 = time.perf_counter()
         target = target_lang or self.cfg.defaults.target_lang
@@ -151,7 +152,7 @@ class Translator:
                 async with self._sem:
                     upstream_calls += 1
                     try:
-                        translated, batch_topic, batch_reason = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic)
+                        translated, batch_topic, batch_reason = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
                         if inferred_topic is None:  # first batch's topic wins for reporting
                             inferred_topic, topic_reason = batch_topic, batch_reason
                         # Safety net: if any item targeted zh* came back identical AND the source
@@ -175,7 +176,7 @@ class Translator:
                                 upstream_calls += 1
                                 redo_translated, _, _ = await self._call_upstream(
                                     redo_texts, target=target, model=mdl, site=site,
-                                    topic=topic or "news",
+                                    topic=topic or "news", glossary=glossary,
                                 )
                                 for local_j, global_j in enumerate(redo_idx):
                                     if local_j < len(redo_translated) and redo_translated[local_j]:
@@ -186,7 +187,7 @@ class Translator:
                         translated = []
                         for t in texts:
                             try:
-                                one_res, _, _ = await self._call_upstream([t], target=target, model=mdl, site=site, topic=topic)
+                                one_res, _, _ = await self._call_upstream([t], target=target, model=mdl, site=site, topic=topic, glossary=glossary)
                                 translated.append(one_res[0] if one_res else None)
                             except Exception as ee:
                                 log.error("single translate failed: %s", ee)
@@ -227,6 +228,7 @@ class Translator:
         model: str | None = None,
         site: str | None = None,
         topic: str | None = None,
+        glossary: list[tuple[str, str]] | None = None,
     ):
         """Async generator: yield batches as soon as they complete.
 
@@ -262,7 +264,7 @@ class Translator:
             texts = [items[i].text for i in indices]
             async with self._sem:
                 try:
-                    translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic)
+                    translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
                 except Exception as e:
                     log.warning("stream batch failed: %s (size=%d)", e, len(texts))
                     translated = [None] * len(texts)
@@ -293,7 +295,8 @@ class Translator:
             raise
 
     async def _call_upstream(
-        self, texts: list[str], *, target: str, model: str, site: str | None, topic: str | None = None
+        self, texts: list[str], *, target: str, model: str, site: str | None, topic: str | None = None,
+        glossary: list[tuple[str, str]] | None = None,
     ) -> tuple[list[str | None], str | None, str]:
         """Stream from the upstream and concatenate deltas.
 
@@ -302,7 +305,7 @@ class Translator:
         the visible content while streaming exposes it via chat.completion.chunk
         deltas.
         """
-        msgs, resolved_topic, topic_reason = build_messages(texts, target_lang=target, site=site, topic=topic)
+        msgs, resolved_topic, topic_reason = build_messages(texts, target_lang=target, site=site, topic=topic, glossary=glossary)
         body = {
             "model": model,
             "messages": msgs,

@@ -28,6 +28,7 @@ class TranslateReq(BaseModel):
     model: str | None = None
     site: str | None = None
     topic: str | None = None   # optional override: "social" | "code" | "academic" | "finance" | "news" | "legal" | "medical" | "game"
+    glossary: list[tuple[str, str]] | None = None  # [[src, dst], ...] — force specific term mappings
 
 
 class TranslateResp(BaseModel):
@@ -102,6 +103,7 @@ async def translate(req: TranslateReq):
         model=req.model,
         site=req.site,
         topic=req.topic,
+        glossary=req.glossary,
     )
     return TranslateResp(
         translations=result.translations,
@@ -136,6 +138,7 @@ async def translate_stream(req: TranslateReq):
                 model=req.model,
                 site=req.site,
                 topic=req.topic,
+                glossary=req.glossary,
             ):
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         except Exception as e:

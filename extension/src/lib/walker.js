@@ -11,10 +11,17 @@ const BLOCK_TAGS = new Set([
 ]);
 
 const SKIP_TAGS = new Set([
-  "SCRIPT","STYLE","NOSCRIPT","CODE","PRE","KBD","SAMP","TT","VAR",
+  "SCRIPT","STYLE","NOSCRIPT",
   "SVG","CANVAS","IMG","VIDEO","AUDIO","IFRAME","TEXTAREA","INPUT","SELECT",
   "BUTTON","MATH","TIME",
 ]);
+
+// Code-like elements — their text is passed through the LLM wrapped in backticks
+// (single for inline, triple for block). The prompt instructs the model to leave
+// backtick-enclosed spans verbatim. This keeps prose around code translatable
+// while not mangling identifiers, CLI flags, etc.
+const INLINE_CODE_TAGS = new Set(["CODE","KBD","SAMP","TT","VAR"]);
+const BLOCK_CODE_TAGS = new Set(["PRE"]);
 
 // ignore nodes inside these structural containers (often UI noise)
 const SKIP_SELECTORS = [
@@ -100,6 +107,50 @@ function isAllPunctOrShort(s) {
   return false;
 }
 
+/** Walk a block subtree and build text with semantic markers:
+ *   - <code>foo</code> → `foo` (inline, single backticks)
+ *   - <pre>...</pre>   → ```\n...\n``` (fenced block)
+ *   - <br>             → "\n"
+ *   - <img alt="..">   → alt text (emoji shortcuts, flags, etc.)
+ *   - children of SKIP_TAGS / SKIP_SELECTORS contribute nothing. */
+function extractBlockText(block) {
+  const out = [];
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out.push(node.nodeValue || "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const tag = node.tagName;
+    if (SKIP_TAGS.has(tag)) return;
+    for (const s of SKIP_SELECTORS) {
+      if (node.matches && node.matches(s)) return;
+    }
+    if (node.classList && node.classList.contains(WRAPPER_CLASS)) return;
+    if (tag === "IMG") {
+      const alt = node.getAttribute("alt");
+      if (alt) out.push(alt);
+      return;
+    }
+    if (tag === "BR") { out.push("\n"); return; }
+    if (INLINE_CODE_TAGS.has(tag)) {
+      out.push("`");
+      for (const c of node.childNodes) walk(c);
+      out.push("`");
+      return;
+    }
+    if (BLOCK_CODE_TAGS.has(tag)) {
+      out.push("\n```\n");
+      for (const c of node.childNodes) walk(c);
+      out.push("\n```\n");
+      return;
+    }
+    for (const c of node.childNodes) walk(c);
+  };
+  for (const c of block.childNodes) walk(c);
+  return out.join("");
+}
+
 function nearestBlock(node) {
   let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
   while (el && el !== document.body) {
@@ -143,7 +194,7 @@ export function findUnits(roots = [document.body]) {
       const block = nearestBlock(n);
       if (!block || seenBlocks.has(block)) continue;
       if (block.hasAttribute(MARK_ATTR)) continue;
-      const text = normalizeText(block.textContent);
+      const text = normalizeText(extractBlockText(block));
       if (text.length < 2) continue;
       if (isAllPunctOrShort(text)) continue;
       seenBlocks.add(block);

@@ -17,10 +17,10 @@ async function send(path, method, body) {
   return resp.data;
 }
 
-export function translateBatch(items, { site = null, topic = null, model = null, target = null, signal = null } = {}) {
+export function translateBatch(items, { site = null, topic = null, model = null, target = null, glossary = null, signal = null } = {}) {
   // signal is ignored — background cannot be AbortController'd cross-message yet.
   const payload = items.map(x => typeof x === "string" ? { text: x } : x);
-  return send("/translate", "POST", { items: payload, site, topic, model, target_lang: target });
+  return send("/translate", "POST", { items: payload, site, topic, model, target_lang: target, glossary });
 }
 
 /**
@@ -28,7 +28,7 @@ export function translateBatch(items, { site = null, topic = null, model = null,
  * `/translate/stream` (SSE) and relays each batch back. `onChunk` fires for every
  * {items: [...]} event. Pass `signal` (AbortSignal) to cancel.
  */
-export function translateStream(items, { site = null, topic = null, model = null, target = null, onChunk = null, signal = null } = {}) {
+export function translateStream(items, { site = null, topic = null, model = null, target = null, glossary = null, onChunk = null, signal = null } = {}) {
   return new Promise(async (resolve, reject) => {
     const { serverUrl = DEFAULT_BASE } = await chrome.storage.sync.get({ serverUrl: DEFAULT_BASE });
     const url = (serverUrl || DEFAULT_BASE).replace(/\/$/, "") + "/translate/stream";
@@ -62,9 +62,18 @@ export function translateStream(items, { site = null, topic = null, model = null
     port.postMessage({
       type: "start",
       url,
-      body: { items: payload, site, topic, model, target_lang: target },
+      body: { items: payload, site, topic, model, target_lang: target, glossary },
     });
   });
+}
+
+/** Translate a single piece of text, used by the selection popover. Plain POST
+ *  to /translate — no streaming needed for one item. */
+export async function translateOne(text, { site = null, model = null, target = null, glossary = null } = {}) {
+  const res = await send("/translate", "POST", {
+    items: [{ text }], site, topic: null, model, target_lang: target, glossary,
+  });
+  return res?.translations?.[0] || "";
 }
 
 export function getConfig()     { return send("/config",     "GET"); }
