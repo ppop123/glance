@@ -2,7 +2,6 @@
 
 :root {
   --fanyi-accent: #2d8cf0;
-  --fanyi-border: color-mix(in oklab, var(--fanyi-accent) 60%, transparent);
   --fanyi-text:   inherit;
 }
 @media (prefers-color-scheme: dark) {
@@ -11,15 +10,13 @@
 
 .fanyi-translation {
   display: block;
-  margin: 6px 0 2px 0;
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--fanyi-border);
+  margin: 4px 0 0 0;
+  padding: 0;
   color: var(--fanyi-text);
   font-family: var(--fanyi-font, inherit);
   font-feature-settings: normal;
   line-height: 1.5;
   user-select: text;
-  opacity: 0.98;
   /* Inherit the source block's line-break semantics so Chinese flows naturally on
      normal-wrap paragraphs (wiki/docs) while still preserving intentional \n in
      pre-wrap contexts (tweets, user comments, code blocks). */
@@ -27,18 +24,17 @@
   word-break: break-word;
 }
 
-/* Tight layout inside narrow table cells so a translation doesn't blow up row heights. */
+/* Tight spacing inside narrow table cells. */
 td > .fanyi-translation,
 th > .fanyi-translation {
-  margin: 2px 0 0 0;
-  padding-left: 6px;
+  margin: 1px 0 0 0;
   font-size: 0.92em;
   line-height: 1.35;
 }
 
-/* Permanent-failure marker — small, muted, not competing with surrounding content. */
+/* Permanent-failure marker — the only place a subtle marker still makes sense,
+   since the user needs to distinguish "translation present" from "gave up". */
 .fanyi-translation.fanyi-failed {
-  border-left-color: rgba(230, 150, 60, 0.5);
   color: rgba(230, 150, 60, 0.95);
   font-size: 0.82em;
   opacity: 0.75;
