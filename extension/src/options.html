@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>翻译 — 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">文</div>
+      <div>
+        <h1>翻译</h1>
+        <p class="sub">本地网页翻译 · 默认双语对照 · 视频字幕由 MLX Whisper 生成</p>
+      </div>
+      <button id="reload-ext" class="link">重新加载扩展</button>
+    </header>
+
+    <section class="card">
+      <h2>服务器</h2>
+      <div class="row">
+        <label for="serverUrl">地址</label>
+        <input id="serverUrl" type="text" placeholder="http://127.0.0.1:8787">
+      </div>
+      <div class="status">
+        <span class="dot" id="serverDot"></span>
+        <span id="serverText">检查中…</span>
+      </div>
+      <div class="status">
+        <span class="dot" id="asrDot"></span>
+        <span id="asrText">ASR：检查中…</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>翻译</h2>
+      <div class="row">
+        <label for="targetLang">目标语言</label>
+        <select id="targetLang">
+          <option value="zh-CN">中文（简体）</option>
+          <option value="zh-TW">中文（繁體）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="model">模型</label>
+        <select id="model">
+          <option value="claude-haiku-4-5">Claude Haiku 4.5 — 快，默认</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet 4.6 — 更准</option>
+          <option value="claude-opus-4-6">Claude Opus 4.6 — 质量最佳</option>
+          <option value="gpt-5.4">GPT-5.4（流式）</option>
+        </select>
+      </div>
+      <p class="hint">服务器通过 auth2api（ccpa，<code>127.0.0.1:8317</code>）调用大模型。gpt-5.4 是 reasoning 模型，必须用流式调用才能拿到正文，服务端已自动处理。</p>
+    </section>
+
+    <section class="card">
+      <h2>自动翻译的网站</h2>
+      <p class="hint">在这些网站上打开页面时自动启用翻译。每行一个域名。</p>
+      <textarea id="autoSites" rows="6" placeholder="x.com&#10;twitter.com&#10;github.com"></textarea>
+    </section>
+
+    <section class="card">
+      <h2>视频字幕</h2>
+      <div class="row">
+        <label for="subDefaultSeconds">默认时长</label>
+        <input id="subDefaultSeconds" type="number" min="5" max="600" value="60"> <span class="unit">秒（现场录制回退时使用）</span>
+      </div>
+      <label class="chk">
+        <input type="checkbox" id="subBilingual" checked>
+        <span>生成双语字幕（原文 + 译文）</span>
+      </label>
+      <label class="chk">
+        <input type="checkbox" id="subPreferDownload" checked>
+        <span>优先使用 yt-dlp 下载音频（比现场录制更快）</span>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>缓存</h2>
+      <div class="kv" id="cacheSummary">加载中…</div>
+      <div class="row" style="margin-top:8px">
+        <button id="clearCache" class="btn">清空缓存</button>
+        <span class="hint" style="margin-left:8px">修改词表或 prompt 后可用此重置。</span>
+      </div>
+    </section>
+
+    <footer>
+      <div class="kv" id="extInfo">—</div>
+      <div class="kv"><a href="https://github.com/wy/fanyi-ext" target="_blank">源码</a></div>
+    </footer>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

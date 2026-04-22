@@ -1,0 +1,59 @@
+/* Scoped under [data-fanyi-state] so removal of the attr instantly hides all output. */
+
+:root {
+  --fanyi-accent: #2d8cf0;
+  --fanyi-border: color-mix(in oklab, var(--fanyi-accent) 60%, transparent);
+  --fanyi-text:   inherit;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --fanyi-accent: #6db3ff; }
+}
+
+.fanyi-translation {
+  display: block;
+  margin: 6px 0 2px 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--fanyi-border);
+  color: var(--fanyi-text);
+  font-feature-settings: normal;
+  line-height: 1.5;
+  user-select: text;
+  opacity: 0.98;
+  white-space: pre-wrap;   /* preserve \n from the translated text */
+  word-break: break-word;
+}
+
+/* Inline pieces (e.g., tweet body): make the wrapper inline-block to avoid reflow of card */
+[data-testid="tweetText"] .fanyi-translation,
+.js-comment-body .fanyi-translation,
+.markdown-body .fanyi-translation {
+  display: block;
+}
+
+[data-fanyi-state="translation"] [data-fanyi-id] > *:not([data-fanyi-wrapper]) {
+  display: none !important;
+}
+
+/* In-flight spinner placeholder: shown in place of translation while the batch runs. */
+.fanyi-translation.fanyi-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fanyi-accent);
+  opacity: 0.7;
+  font-size: 0.9em;
+}
+.fanyi-translation.fanyi-loading::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in oklab, var(--fanyi-accent) 25%, transparent);
+  border-top-color: var(--fanyi-accent);
+  border-radius: 50%;
+  animation: fanyi-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes fanyi-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .fanyi-translation.fanyi-loading::before { animation-duration: 2s; }
+}

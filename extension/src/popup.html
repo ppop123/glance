@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>翻译</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="hdr">
+    <div class="brand">
+      <div class="logo">文</div>
+      <div class="title">翻译</div>
+    </div>
+    <button class="icon-btn" id="open-options" title="设置">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
+
+  <section class="hero" id="hero">
+    <button class="toggle" id="toggle" aria-pressed="false">
+      <div class="toggle-state" id="toggleState">…</div>
+      <div class="toggle-hint" id="toggleHint">⌥A · 翻译当前页面</div>
+    </button>
+    <div class="site-row">
+      <span class="site-name" id="siteName">加载中…</span>
+      <label class="chk">
+        <input type="checkbox" id="autoSite">
+        <span>自动翻译此网站</span>
+      </label>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-title">翻译服务</div>
+    <div class="kv-grid">
+      <label>目标语言</label>
+      <select id="targetLang">
+        <option value="zh-CN">中文（简体）</option>
+        <option value="zh-TW">中文（繁體）</option>
+      </select>
+      <label>模型</label>
+      <select id="model">
+        <option value="claude-haiku-4-5">Claude Haiku 4.5（快，默认）</option>
+        <option value="claude-sonnet-4-6">Claude Sonnet 4.6（更准）</option>
+        <option value="claude-opus-4-6">Claude Opus 4.6（最好）</option>
+        <option value="gpt-5.4">GPT-5.4（流式）</option>
+      </select>
+    </div>
+    <div class="kv">
+      <span class="dot" id="serverDot"></span>
+      <span id="serverText">正在检查服务器…</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-title">视频字幕 <span class="pill">无字幕视频转录</span></div>
+    <div class="sub-row">
+      <label>时长</label>
+      <input type="number" id="subSeconds" value="60" min="5" max="600">
+      <span>秒</span>
+      <button class="btn primary" id="sub-go">开始转录</button>
+    </div>
+    <label class="chk">
+      <input type="checkbox" id="subTranslate" checked>
+      <span>同时翻译字幕（双语）</span>
+    </label>
+    <div class="sub-status" id="sub-status"></div>
+  </section>
+
+  <footer class="ftr">
+    <div class="kv"><span id="cacheText">缓存：—</span></div>
+    <div class="ftr-actions">
+      <button class="link-btn" id="clear" title="清空翻译缓存">清空缓存</button>
+      <button class="link-btn" id="dev-reload" title="重新加载扩展">重载扩展</button>
+    </div>
+    <div class="server-input">
+      <input id="serverUrl" type="text" placeholder="http://127.0.0.1:8787">
+    </div>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

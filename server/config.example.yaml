@@ -1,0 +1,37 @@
+# Copy to config.yaml and adjust.
+
+host: "127.0.0.1"
+port: 8787
+
+# Upstream: ccpa (auth2api) on same machine
+upstream:
+  base_url: "http://127.0.0.1:8317/v1"
+  api_key: "sk-REPLACE_ME"
+  timeout_s: 60
+
+# Default translation model; extension can override per-request
+# claude-haiku-4-5 is fast + cheap + good at translation.
+# gpt-5.4 via ccpa routes to Codex which doesn't do general chat well — avoid.
+defaults:
+  model: "claude-haiku-4-5"
+  target_lang: "zh-CN"
+  temperature: 0
+  max_output_tokens: 2048
+  batch_size: 30          # max texts per upstream call
+  concurrency: 4          # parallel upstream calls
+
+# Cache
+cache:
+  db_path: "~/.fanyi-ext/cache.sqlite3"
+  ttl_days: 7
+  max_entries: 100000
+  glossary_version: 1     # bump to invalidate all entries on prompt/glossary change
+
+# ASR (Phase 2, proxied to mac mini)
+asr:
+  base_url: "http://192.168.50.8:8788"
+  timeout_s: 300
+  enabled: false
+
+# Logging
+log_level: "info"
