@@ -15,6 +15,7 @@
   padding: 2px 0 2px 10px;
   border-left: 2px solid var(--fanyi-border);
   color: var(--fanyi-text);
+  font-family: var(--fanyi-font, inherit);
   font-feature-settings: normal;
   line-height: 1.5;
   user-select: text;
@@ -25,6 +26,37 @@
   white-space: inherit;
   word-break: break-word;
 }
+
+/* Tight layout inside narrow table cells so a translation doesn't blow up row heights. */
+td > .fanyi-translation,
+th > .fanyi-translation {
+  margin: 2px 0 0 0;
+  padding-left: 6px;
+  font-size: 0.92em;
+  line-height: 1.35;
+}
+
+/* Permanent-failure marker — small, muted, not competing with surrounding content. */
+.fanyi-translation.fanyi-failed {
+  border-left-color: rgba(230, 150, 60, 0.5);
+  color: rgba(230, 150, 60, 0.95);
+  font-size: 0.82em;
+  opacity: 0.75;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.fanyi-failed-retry {
+  appearance: none;
+  background: transparent;
+  border: 1px solid rgba(230, 150, 60, 0.55);
+  color: inherit;
+  font: inherit;
+  border-radius: 9999px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.fanyi-failed-retry:hover { background: rgba(230, 150, 60, 0.1); }
 
 /* Places where users explicitly type newlines — keep them preserved regardless
    of whether the host page's CSS inheritance happens to propagate pre-wrap. */

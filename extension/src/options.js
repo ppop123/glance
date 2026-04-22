@@ -17,6 +17,7 @@ async function loadPrefs() {
     subPreferDownload: true,
     glossary: [],
     showFab: true,
+    translationFont: "",
   });
   $("#serverUrl").value = p.serverUrl;
   $("#targetLang").value = p.targetLang;
@@ -27,6 +28,7 @@ async function loadPrefs() {
   $("#subPreferDownload").checked = !!p.subPreferDownload;
   $("#glossary").value = (p.glossary || []).map(([src, dst]) => `${src} => ${dst}`).join("\n");
   $("#showFab").checked = p.showFab !== false;
+  $("#translationFont").value = p.translationFont || "";
 }
 
 /** Parse glossary textarea — lines like "src => dst" or "src → dst". Lenient. */
@@ -105,6 +107,7 @@ $("#subBilingual").addEventListener("change", (e) => save("subBilingual", e.targ
 $("#subPreferDownload").addEventListener("change", (e) => save("subPreferDownload", e.target.checked));
 $("#glossary").addEventListener("change", (e) => save("glossary", parseGlossary(e.target.value)));
 $("#showFab").addEventListener("change", (e) => save("showFab", e.target.checked));
+$("#translationFont").addEventListener("change", (e) => save("translationFont", (e.target.value || "").trim()));
 
 $("#clearCache").addEventListener("click", async () => {
   try {

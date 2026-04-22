@@ -32,6 +32,16 @@ function ensureStyles() {
   document.documentElement.appendChild(link);
 }
 
+/** Apply the user-chosen translation font — a CSS custom property the
+ * injected stylesheet reads via `font-family: var(--fanyi-font, inherit)`.
+ * Empty string falls back to the element's inherited font. */
+function applyTranslationFont(value) {
+  const root = document.documentElement;
+  const v = (value || "").trim();
+  if (v) root.style.setProperty("--fanyi-font", v);
+  else root.style.removeProperty("--fanyi-font");
+}
+
 // ---- Adapter selection ------------------------------------------------------
 
 async function pickAdapter() {
@@ -54,6 +64,41 @@ function markFailure(el) {
   const n = (parseInt(el.getAttribute(FAIL_ATTR) || "0", 10) || 0) + 1;
   el.setAttribute(FAIL_ATTR, String(n));
   return n < MAX_FAILS;
+}
+
+/** Final-failure UI: show a small "⚠ 翻译失败 · 重试" hint under the source
+ * block. Click the retry link to clear failure state and let the next scan
+ * pick the block up again. */
+function renderPermanentFailure(el) {
+  if (el.querySelector(":scope > .fanyi-failed")) return;
+  const w = document.createElement("font");
+  w.className = "fanyi-translation fanyi-failed";
+  w.setAttribute("data-fanyi-wrapper", "1");
+  w.setAttribute("data-fanyi-skip", "1");
+  const span = document.createElement("span");
+  span.className = "fanyi-failed-msg";
+  span.textContent = "⚠ 翻译失败";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "fanyi-failed-retry";
+  btn.setAttribute("data-fanyi-skip", "1");
+  btn.textContent = "重试";
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    el.removeAttribute(MARK_ATTR);
+    el.removeAttribute(FAIL_ATTR);
+    el.removeAttribute("data-fanyi-src");
+    w.remove();
+    // Re-run translate on this one element directly — no need to wait for a
+    // whole-page scan.
+    translateUnits([{ el, text: extractPlainText(el) }]);
+  });
+  w.append(span, btn);
+  el.appendChild(w);
+}
+
+function extractPlainText(el) {
+  return (el.textContent || "").replace(/\s+/g, " ").trim();
 }
 
 /* ── Global progress pill ─────────────────────────────────────────────────
@@ -86,19 +131,26 @@ function pillEnsure() {
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
 }
 
+let pillRenderRaf = 0;
 function pillRender() {
-  if (!pillEl) return;
-  const txt = pillEl.querySelector(".fanyi-progress-text");
-  const remaining = pillTotal - pillDone;
-  if (pillTotal > 0 && remaining <= 0) {
-    pillEl.classList.add("fanyi-progress-done");
-    pillEl.title = "翻译完成";
-    txt.textContent = `已完成 ${pillTotal}`;
-  } else {
-    pillEl.classList.remove("fanyi-progress-done");
-    pillEl.title = "点击取消翻译";
-    txt.textContent = `翻译中 ${pillDone}/${pillTotal}`;
-  }
+  // Coalesce many advance() calls in a single animation frame — at 30 items/batch
+  // fanning out, we can otherwise mutate text content dozens of times per tick.
+  if (pillRenderRaf) return;
+  pillRenderRaf = requestAnimationFrame(() => {
+    pillRenderRaf = 0;
+    if (!pillEl) return;
+    const txt = pillEl.querySelector(".fanyi-progress-text");
+    const remaining = pillTotal - pillDone;
+    if (pillTotal > 0 && remaining <= 0) {
+      pillEl.classList.add("fanyi-progress-done");
+      pillEl.title = "翻译完成";
+      txt.textContent = `已完成 ${pillTotal}`;
+    } else {
+      pillEl.classList.remove("fanyi-progress-done");
+      pillEl.title = "点击取消翻译";
+      txt.textContent = `翻译中 ${pillDone}/${pillTotal}`;
+    }
+  });
 }
 
 function pillAdd(n) {
@@ -146,6 +198,14 @@ async function translateUnits(units) {
   const fresh = [];
   let skippedSame = 0;
   let retranslate = 0;
+  let deferred = 0;
+  // Anything further than this many viewports away is deferred — the scroll
+  // observer will pick it up when the user approaches it. On Wikipedia pages
+  // with 1500+ blocks this avoids translating hundreds of never-visible
+  // collapsed / below-fold sections.
+  const vh = window.innerHeight || 800;
+  const FORWARD = vh * 3;
+  const BACKWARD = vh * 1;
   for (const u of units) {
     const marked = u.el.hasAttribute(MARK_ATTR);
     const stale = marked && isStale(u.el, u.text);
@@ -160,14 +220,37 @@ async function translateUnits(units) {
       skippedSame++;
       continue;
     }
+    // Viewport-lazy gate: leave far-offscreen units unmarked so a later scroll
+    // triggers re-discovery and pulls them in at their turn.
+    const rect = u.el.getBoundingClientRect();
+    if (rect.top > FORWARD || rect.bottom < -BACKWARD) {
+      deferred++;
+      continue;
+    }
     markUnit(u.el, u.text);
     fresh.push(u);
   }
   if (!fresh.length) {
-    if (skippedSame || retranslate) console.info("[fanyi] skipped %d same-lang, %d re-translated", skippedSame, retranslate);
+    if (skippedSame || retranslate || deferred) console.debug("[fanyi] skipped %d same-lang, %d re-translated, %d deferred", skippedSame, retranslate, deferred);
     return;
   }
-  console.info("[fanyi] streaming %d fresh (skipped %d same-lang, %d re-translated)", fresh.length, skippedSame, retranslate);
+  // Client-side dedup: many pages repeat the same text (retweets, nav items
+  // like "Edit" / "Notes" reused on every article). Send each unique string
+  // once; fan out the response to every element that shared it.
+  const byText = new Map();  // text → { rep: u, els: [u...] }
+  for (const u of fresh) {
+    const g = byText.get(u.text);
+    if (g) g.els.push(u);
+    else byText.set(u.text, { rep: u, els: [u] });
+  }
+  const unique = Array.from(byText.values()).map((g) => g.rep);
+  const fanout = new Map(unique.map((u, i) => [i, byText.get(u.text).els]));
+  const dedupSkipped = fresh.length - unique.length;
+
+  console.debug(
+    "[fanyi] streaming %d unique (dedup -%d, same-lang -%d, re-translated +%d, deferred %d)",
+    unique.length, dedupSkipped, skippedSame, retranslate, deferred
+  );
 
   const ac = new AbortController();
   const key = Symbol();
@@ -177,7 +260,7 @@ async function translateUnits(units) {
   let applied = 0;
   try {
     await translateStream(
-      fresh.map(u => ({ text: u.text, tag: u.tag || null })),
+      unique.map(u => ({ text: u.text, tag: u.tag || null })),
       {
         site: state.adapter.site || location.hostname,
         topic: state.adapter.topic || null,
@@ -189,14 +272,17 @@ async function translateUnits(units) {
           if (!state.enabled || !data?.items) return;
           let n = 0;
           for (const it of data.items) {
-            const u = fresh[it.i];
-            n++;
-            if (!u || !u.el.isConnected) continue;
-            if (it.failed) {
-              if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
-            } else {
-              u.el.removeAttribute(FAIL_ATTR);
-              appendTranslation(u.el, it.translation);
+            const els = fanout.get(it.i) || [];
+            for (const u of els) {
+              n++;
+              if (!u.el.isConnected) continue;
+              if (it.failed) {
+                if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+                else renderPermanentFailure(u.el);
+              } else {
+                u.el.removeAttribute(FAIL_ATTR);
+                appendTranslation(u.el, it.translation);
+              }
             }
           }
           applied += n;
@@ -206,15 +292,14 @@ async function translateUnits(units) {
     );
   } catch (e) {
     console.warn("[fanyi] stream failed:", e);
-    // Anything we never got back: requeue for retry.
     for (const u of fresh) {
       if (u.el.isConnected && !u.el.querySelector(":scope > .fanyi-translation")) {
         if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+        else renderPermanentFailure(u.el);
       }
     }
   } finally {
     state.inflight.delete(key);
-    // Drain pill counter for any items the stream skipped (error, disconnect, aborted).
     if (applied < fresh.length) pillAdvance(fresh.length - applied);
   }
 }
@@ -339,8 +424,20 @@ function selShowPop(x, y, text, loading) {
     : `<div class="fanyi-sel-pop-text">${selEscape(text)}</div>`;
   selPopEl.innerHTML = html;
   selPopEl.style.display = "block";
-  selPopEl.style.top = `${window.scrollY + y + 24}px`;
-  selPopEl.style.left = `${window.scrollX + Math.max(8, x - 120)}px`;
+  // Layout first to measure actual size, then clamp within viewport with an 8px gutter.
+  selPopEl.style.visibility = "hidden";
+  selPopEl.style.top = "0";
+  selPopEl.style.left = "0";
+  const w = selPopEl.offsetWidth || 200;
+  const h = selPopEl.offsetHeight || 40;
+  let top = y + 24;
+  let left = x - w / 2;
+  if (left < 8) left = 8;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  if (top + h > window.innerHeight - 8) top = Math.max(8, y - h - 8);
+  selPopEl.style.top = `${window.scrollY + top}px`;
+  selPopEl.style.left = `${window.scrollX + left}px`;
+  selPopEl.style.visibility = "";
 }
 
 function selHidePop() { if (selPopEl) selPopEl.style.display = "none"; }
@@ -493,12 +590,13 @@ export async function boot() {
   });
 
   // Load user prefs from storage.
-  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model", "glossary", "showFab"]).catch(() => ({}));
+  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model", "glossary", "showFab", "translationFont"]).catch(() => ({}));
   const autoSites = Array.isArray(prefs.autoSites) && prefs.autoSites.length ? prefs.autoSites : DEFAULT_AUTO_SITES;
   state.target = prefs.targetLang || DEFAULT_TARGET;
   state.model  = prefs.model || null;
   state.glossary = Array.isArray(prefs.glossary) && prefs.glossary.length ? prefs.glossary : null;
   state.showFab = prefs.showFab !== false;  // default on; user can hide via FAB menu
+  applyTranslationFont(prefs.translationFont || "");
 
   // Re-read on the fly when user changes settings in popup.
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -511,6 +609,7 @@ export async function boot() {
       if (state.showFab) fabInstall();
       else fabRemove();
     }
+    if (changes.translationFont) applyTranslationFont(changes.translationFont.newValue || "");
   });
 
   console.info("[fanyi] boot: adapter=%s site=%s target=%s model=%s auto=%o", state.adapter.name, state.site, state.target, state.model || "(default)", autoSites);

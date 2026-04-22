@@ -89,6 +89,26 @@ export function isSkippable(el) {
   return false;
 }
 
+/** `display:none` / `visibility:hidden` / ancestor with 0 bounding box.
+ * Called only on the nearestBlock (not per text node) since getComputedStyle
+ * is ~10μs and we want to batch the cost. Collapsed ancestors are found
+ * cheaply via offsetParent === null. */
+export function isHiddenBlock(el) {
+  if (!el || !(el instanceof Element)) return true;
+  // offsetParent === null catches display:none AND detached-from-flow ancestors.
+  // Exception: position:fixed and <body> have offsetParent===null legitimately.
+  if (el.offsetParent === null) {
+    const cs = getComputedStyle(el);
+    if (cs.position !== "fixed" && cs.position !== "sticky") return true;
+    if (cs.display === "none") return true;
+  }
+  // visibility:hidden keeps layout but not painted — we don't want to pay to
+  // translate what the user can't see.
+  const vs = getComputedStyle(el).visibility;
+  if (vs === "hidden" || vs === "collapse") return true;
+  return false;
+}
+
 /** Normalize extracted text: collapse horizontal whitespace only, preserve \n paragraph structure. */
 export function normalizeText(s) {
   return (s || "")
@@ -194,10 +214,11 @@ export function findUnits(roots = [document.body]) {
       const block = nearestBlock(n);
       if (!block || seenBlocks.has(block)) continue;
       if (block.hasAttribute(MARK_ATTR)) continue;
+      seenBlocks.add(block);  // memoize regardless of keep/skip decision
+      if (isHiddenBlock(block)) continue;  // invisible → don't spend tokens
       const text = normalizeText(extractBlockText(block));
       if (text.length < 2) continue;
       if (isAllPunctOrShort(text)) continue;
-      seenBlocks.add(block);
       units.push({ el: block, text });
     }
   }

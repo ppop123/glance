@@ -72,7 +72,7 @@ export function observe(onNewUnits) {
     pending = requestAnimationFrame(() => {
       pending = null;
       const units = discoverUnits();
-      console.info("[fanyi gh] schedule reason=%s ticks=%d units=%d", reason, tickCount, units.length);
+      console.debug("[fanyi gh] schedule reason=%s ticks=%d units=%d", reason, tickCount, units.length);
       tickCount = 0;
       onNewUnits(units);
     });

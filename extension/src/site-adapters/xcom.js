@@ -161,7 +161,9 @@ function addSubtitleButton(article) {
         </button>
       </div>
     `;
-    wrap._fanyiVideo = video;
+    // Resolve the <video> dynamically every time — X's virtualized feed can swap
+    // the element under us. Container stays stable because we positioned it.
+    wrap._fanyiGetVideo = () => container.querySelector("video") || video;
     wrap._fanyiPermalink = permalink;
     container.appendChild(wrap);
 
@@ -239,7 +241,7 @@ function ensureSubClickHandler() {
         menu.removeAttribute("hidden");
         btn.setAttribute("aria-expanded", "true");
         // Refresh enabled state of download
-        const video = wrap._fanyiVideo;
+        const video = wrap._fanyiGetVideo?.();
         const track = Array.from(video?.textTracks || []).find(t => t.label === "fanyi");
         const dl = menu.querySelector('[data-action="download"]');
         if (dl) dl.disabled = !(track?.cues?.length);
@@ -252,7 +254,7 @@ function ensureSubClickHandler() {
     if (item) {
       ev.stopPropagation(); ev.preventDefault();
       const wrap = item.closest(`.${SUB_WRAP_CLASS}`);
-      const video = wrap?._fanyiVideo;
+      const video = wrap?._fanyiGetVideo?.();
       const permalink = wrap?._fanyiPermalink;
       const action = item.dataset.action;
       closeAllSubMenus();
@@ -413,7 +415,7 @@ export function observe(onNewUnits) {
     document.querySelector('[data-testid="primaryColumn"]') ||
     document.querySelector('main') ||
     document.body;
-  console.info("[fanyi xcom] observer target:", target.tagName, target.getAttribute?.("data-testid") || "");
+  console.debug("[fanyi xcom] observer target:", target.tagName, target.getAttribute?.("data-testid") || "");
 
   let pending = null;
   let tickCount = 0;
@@ -423,7 +425,7 @@ export function observe(onNewUnits) {
     pending = requestAnimationFrame(() => {
       pending = null;
       const units = discoverUnits();
-      console.info("[fanyi xcom] schedule fired, reason=%s ticks=%d units=%d", reason, tickCount, units.length);
+      console.debug("[fanyi xcom] schedule fired, reason=%s ticks=%d units=%d", reason, tickCount, units.length);
       tickCount = 0;
       onNewUnits(units);
     });
@@ -441,7 +443,7 @@ export function observe(onNewUnits) {
     if (pc && pc !== target && target === document.body) {
       mo.disconnect();
       mo.observe(pc, { childList: true, subtree: true, characterData: true });
-      console.info("[fanyi xcom] re-targeted observer to primaryColumn");
+      console.debug("[fanyi xcom] re-targeted observer to primaryColumn");
       clearInterval(retargetInterval);
       schedule("retarget");
     } else if (pc) {

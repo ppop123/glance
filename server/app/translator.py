@@ -9,7 +9,7 @@ from json import loads as json_loads
 
 import httpx
 
-from .cache import Cache
+from .cache import Cache, glossary_fingerprint
 from .config import Config
 from .prompts import build_messages, format_batch, parse_batch
 
@@ -56,7 +56,18 @@ class Translator:
             timeout=cfg.upstream.timeout_s,
             headers={"Authorization": f"Bearer {cfg.upstream.api_key}"},
         )
-        self._sem = asyncio.Semaphore(cfg.defaults.concurrency)
+        self._default_sem = asyncio.Semaphore(cfg.defaults.concurrency)
+        # Per-model semaphores so one slow model's queue doesn't starve another.
+        self._model_sems: dict[str, asyncio.Semaphore] = {}
+        for name, tuning in (cfg.defaults.per_model or {}).items():
+            self._model_sems[name] = asyncio.Semaphore(tuning.concurrency)
+
+    def _tuning_for(self, model: str) -> tuple[int, asyncio.Semaphore]:
+        """Return (batch_size, semaphore) for the given model."""
+        tuning = (self.cfg.defaults.per_model or {}).get(model)
+        if tuning:
+            return tuning.batch_size, self._model_sems[model]
+        return self.cfg.defaults.batch_size, self._default_sem
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -117,24 +128,29 @@ class Translator:
         t0 = time.perf_counter()
         target = target_lang or self.cfg.defaults.target_lang
         mdl = model or self.cfg.defaults.model
+        gfp = glossary_fingerprint(glossary)
 
         n = len(items)
         out: list[str | None] = [None] * n
         hits: list[bool] = [False] * n
 
-        # 1) cache lookup — prefer tag then text
+        # 1) cache lookup — prefer tag then text. Lookups run in a thread so the
+        # event loop can serve other requests while SQLite is blocking.
         miss_idx: list[int] = []
-        for i, it in enumerate(items):
+
+        def lookup(it):
             if it.tag:
-                got = self.cache.get_tag(it.tag, model=mdl, target=target)
-                if got is not None:
-                    out[i], hits[i] = got, True
-                    continue
-            got = self.cache.get_text(it.text, model=mdl, target=target)
+                g = self.cache.get_tag(it.tag, model=mdl, target=target, glossary_fp=gfp)
+                if g is not None:
+                    return g
+            return self.cache.get_text(it.text, model=mdl, target=target, glossary_fp=gfp)
+
+        got_all = await asyncio.to_thread(lambda: [lookup(it) for it in items])
+        for i, got in enumerate(got_all):
             if got is not None:
                 out[i], hits[i] = got, True
-                continue
-            miss_idx.append(i)
+            else:
+                miss_idx.append(i)
 
         upstream_calls = 0
         inferred_topic: str | None = None
@@ -142,14 +158,14 @@ class Translator:
         if miss_idx:
             # 2) batch misses and dispatch
             batches: list[list[int]] = []
-            bs = self.cfg.defaults.batch_size
+            bs, sem = self._tuning_for(mdl)
             for start in range(0, len(miss_idx), bs):
                 batches.append(miss_idx[start : start + bs])
 
             async def run_batch(indices: list[int]) -> None:
                 nonlocal upstream_calls, inferred_topic, topic_reason
                 texts = [items[i].text for i in indices]
-                async with self._sem:
+                async with sem:
                     upstream_calls += 1
                     try:
                         translated, batch_topic, batch_reason = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
@@ -192,19 +208,19 @@ class Translator:
                             except Exception as ee:
                                 log.error("single translate failed: %s", ee)
                                 translated.append(None)
+                to_cache = []
                 for local_i, global_i in enumerate(indices):
                     tr = translated[local_i] if local_i < len(translated) else None
                     if tr is None:
                         out[global_i] = items[global_i].text  # graceful fallback = echo original
                     else:
                         out[global_i] = tr
-                        self.cache.put(
-                            text=items[global_i].text,
-                            translation=tr,
-                            model=mdl,
-                            target=target,
-                            tag=items[global_i].tag,
-                        )
+                        to_cache.append((items[global_i].text, tr, items[global_i].tag))
+                if to_cache:
+                    def _put_all():
+                        for t, tr, tag in to_cache:
+                            self.cache.put(text=t, translation=tr, model=mdl, target=target, tag=tag, glossary_fp=gfp)
+                    await asyncio.to_thread(_put_all)
 
             await asyncio.gather(*[run_batch(b) for b in batches])
 
@@ -237,19 +253,25 @@ class Translator:
         """
         target = target_lang or self.cfg.defaults.target_lang
         mdl = model or self.cfg.defaults.model
+        gfp = glossary_fingerprint(glossary)
 
-        miss_idx: list[int] = []
-        hits: list[dict] = []
-        for i, it in enumerate(items):
-            got = None
-            if it.tag:
-                got = self.cache.get_tag(it.tag, model=mdl, target=target)
-            if got is None:
-                got = self.cache.get_text(it.text, model=mdl, target=target)
-            if got is not None:
-                hits.append({"i": i, "translation": got, "cached": True})
-            else:
-                miss_idx.append(i)
+        def _lookups():
+            miss = []
+            results: list[dict | None] = [None] * len(items)
+            for i, it in enumerate(items):
+                g = None
+                if it.tag:
+                    g = self.cache.get_tag(it.tag, model=mdl, target=target, glossary_fp=gfp)
+                if g is None:
+                    g = self.cache.get_text(it.text, model=mdl, target=target, glossary_fp=gfp)
+                if g is not None:
+                    results[i] = {"i": i, "translation": g, "cached": True}
+                else:
+                    miss.append(i)
+            return miss, results
+
+        miss_idx, cached_rows = await asyncio.to_thread(_lookups)
+        hits = [r for r in cached_rows if r is not None]
 
         if hits:
             yield {"items": hits}
@@ -257,31 +279,31 @@ class Translator:
         if not miss_idx:
             return
 
-        bs = self.cfg.defaults.batch_size
+        bs, sem = self._tuning_for(mdl)
         batches = [miss_idx[s : s + bs] for s in range(0, len(miss_idx), bs)]
 
         async def run_batch(indices: list[int]) -> list[dict]:
             texts = [items[i].text for i in indices]
-            async with self._sem:
+            async with sem:
                 try:
                     translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
                 except Exception as e:
                     log.warning("stream batch failed: %s (size=%d)", e, len(texts))
                     translated = [None] * len(texts)
             out: list[dict] = []
+            to_cache = []
             for local_i, global_i in enumerate(indices):
                 tr = translated[local_i] if local_i < len(translated) else None
                 if tr is None:
                     out.append({"i": global_i, "translation": items[global_i].text, "failed": True})
                 else:
                     out.append({"i": global_i, "translation": tr})
-                    self.cache.put(
-                        text=items[global_i].text,
-                        translation=tr,
-                        model=mdl,
-                        target=target,
-                        tag=items[global_i].tag,
-                    )
+                    to_cache.append((items[global_i].text, tr, items[global_i].tag))
+            if to_cache:
+                def _put_all():
+                    for t, tr, tag in to_cache:
+                        self.cache.put(text=t, translation=tr, model=mdl, target=target, tag=tag, glossary_fp=gfp)
+                await asyncio.to_thread(_put_all)
             return out
 
         tasks = [asyncio.create_task(run_batch(b)) for b in batches]
@@ -290,9 +312,14 @@ class Translator:
                 batch_result = await coro
                 yield {"items": batch_result}
         except asyncio.CancelledError:
-            for t in tasks:
-                t.cancel()
             raise
+        finally:
+            # Runs on normal exit, CancelledError, AND generator close (client
+            # disconnect). Each task's _call_upstream uses httpx.stream() which
+            # respects task cancellation and closes the underlying TCP stream.
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
     async def _call_upstream(
         self, texts: list[str], *, target: str, model: str, site: str | None, topic: str | None = None,

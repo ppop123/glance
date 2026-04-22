@@ -17,8 +17,12 @@ defaults:
   target_lang: "zh-CN"
   temperature: 0
   max_output_tokens: 2048
-  batch_size: 30          # max texts per upstream call
-  concurrency: 4          # parallel upstream calls
+  batch_size: 30          # fallback if per_model entry is missing
+  concurrency: 4          # fallback if per_model entry is missing
+  # Optional per-model tuning.
+  # per_model:
+  #   claude-haiku-4-5: { batch_size: 20, concurrency: 8 }
+  #   gpt-5.4:          { batch_size: 50, concurrency: 3 }
 
 # Cache
 cache:

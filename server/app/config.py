@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -15,6 +15,12 @@ class UpstreamCfg:
 
 
 @dataclass
+class ModelTuning:
+    batch_size: int
+    concurrency: int
+
+
+@dataclass
 class DefaultsCfg:
     model: str
     target_lang: str
@@ -22,6 +28,10 @@ class DefaultsCfg:
     max_output_tokens: int
     batch_size: int
     concurrency: int
+    # Optional per-model override: {"gpt-5.4": ModelTuning(50, 3), ...}. If the
+    # model selected at call-time isn't in this map, the generic batch_size /
+    # concurrency above apply.
+    per_model: dict[str, ModelTuning] = field(default_factory=dict)
 
 
 @dataclass
@@ -68,11 +78,17 @@ def load_config(path: str | Path | None = None) -> Config:
             raise FileNotFoundError("no config.yaml found; copy config.example.yaml to config.yaml")
     with open(path) as f:
         raw = yaml.safe_load(f)
+    defaults_raw = dict(raw["defaults"])
+    per_model_raw = defaults_raw.pop("per_model", {}) or {}
+    per_model = {
+        k: ModelTuning(batch_size=int(v["batch_size"]), concurrency=int(v["concurrency"]))
+        for k, v in per_model_raw.items()
+    }
     return Config(
         host=raw.get("host", "127.0.0.1"),
         port=int(raw.get("port", 8787)),
         upstream=UpstreamCfg(**raw["upstream"]),
-        defaults=DefaultsCfg(**raw["defaults"]),
+        defaults=DefaultsCfg(**defaults_raw, per_model=per_model),
         cache=CacheCfg(
             db_path=_expand(raw["cache"]["db_path"]),
             ttl_days=int(raw["cache"]["ttl_days"]),

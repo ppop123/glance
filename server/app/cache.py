@@ -27,16 +27,35 @@ from typing import Iterable
 from .config import CacheCfg
 
 
-def _key(model: str, target: str, glossary_version: int, text_or_id: str) -> str:
+def _key(model: str, target: str, glossary_version: int, text_or_id: str, *, glossary_fp: str = "") -> str:
     h = hashlib.sha256()
     h.update(model.encode())
     h.update(b"|")
     h.update(target.encode())
     h.update(b"|")
     h.update(str(glossary_version).encode())
+    if glossary_fp:
+        # Per-request user glossary fingerprint — changing the user's term map
+        # invalidates just their entries, not everyone else's.
+        h.update(b"|g:")
+        h.update(glossary_fp.encode())
     h.update(b"|")
     h.update(text_or_id.encode())
     return h.hexdigest()
+
+
+def glossary_fingerprint(glossary: list[tuple[str, str]] | None) -> str:
+    """Short stable hash of a glossary mapping. Empty/None → '' so existing
+    rows without a glossary still hit."""
+    if not glossary:
+        return ""
+    norm = sorted((str(s), str(d)) for s, d in glossary if s and d)
+    if not norm:
+        return ""
+    h = hashlib.sha256()
+    for s, d in norm:
+        h.update(s.encode()); h.update(b"\x00"); h.update(d.encode()); h.update(b"\x01")
+    return h.hexdigest()[:12]
 
 
 class Cache:
@@ -75,12 +94,12 @@ class Cache:
         )
         return days * 86400
 
-    def get_text(self, text: str, *, model: str, target: str) -> str | None:
-        return self._get(_key(model, target, self.cfg.glossary_version, text))
+    def get_text(self, text: str, *, model: str, target: str, glossary_fp: str = "") -> str | None:
+        return self._get(_key(model, target, self.cfg.glossary_version, text, glossary_fp=glossary_fp))
 
-    def get_tag(self, tag: str, *, model: str, target: str) -> str | None:
+    def get_tag(self, tag: str, *, model: str, target: str, glossary_fp: str = "") -> str | None:
         """Secondary lookup by a stable site-provided id (e.g., 'tweet:12345')."""
-        return self._get(_key(model, target, self.cfg.glossary_version, "\x00tag\x00" + tag))
+        return self._get(_key(model, target, self.cfg.glossary_version, "\x00tag\x00" + tag, glossary_fp=glossary_fp))
 
     def _get(self, key: str) -> str | None:
         now = int(time.time())
@@ -100,11 +119,11 @@ class Cache:
             )
             return value
 
-    def put(self, *, text: str, translation: str, model: str, target: str, tag: str | None = None) -> None:
+    def put(self, *, text: str, translation: str, model: str, target: str, tag: str | None = None, glossary_fp: str = "") -> None:
         now = int(time.time())
-        keys = [_key(model, target, self.cfg.glossary_version, text)]
+        keys = [_key(model, target, self.cfg.glossary_version, text, glossary_fp=glossary_fp)]
         if tag:
-            keys.append(_key(model, target, self.cfg.glossary_version, "\x00tag\x00" + tag))
+            keys.append(_key(model, target, self.cfg.glossary_version, "\x00tag\x00" + tag, glossary_fp=glossary_fp))
         with self._lock:
             for k in keys:
                 # Preserve hits on re-put (same key, possibly same text retranslated) — a
