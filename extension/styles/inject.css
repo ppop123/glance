@@ -19,15 +19,20 @@
   line-height: 1.5;
   user-select: text;
   opacity: 0.98;
-  white-space: pre-wrap;   /* preserve \n from the translated text */
+  /* Inherit the source block's line-break semantics so Chinese flows naturally on
+     normal-wrap paragraphs (wiki/docs) while still preserving intentional \n in
+     pre-wrap contexts (tweets, user comments, code blocks). */
+  white-space: inherit;
   word-break: break-word;
 }
 
-/* Inline pieces (e.g., tweet body): make the wrapper inline-block to avoid reflow of card */
+/* Places where users explicitly type newlines — keep them preserved regardless
+   of whether the host page's CSS inheritance happens to propagate pre-wrap. */
 [data-testid="tweetText"] .fanyi-translation,
 .js-comment-body .fanyi-translation,
 .markdown-body .fanyi-translation {
   display: block;
+  white-space: pre-wrap;
 }
 
 [data-fanyi-state="translation"] [data-fanyi-id] > *:not([data-fanyi-wrapper]) {
