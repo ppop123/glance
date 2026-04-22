@@ -120,3 +120,46 @@ footer {
   display: flex; justify-content: space-between; align-items: center;
   margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border);
 }
+
+/* Provider stats table */
+.prov-stats { margin-top: 6px; overflow-x: auto; }
+.prov-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.prov-table th, .prov-table td {
+  text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border);
+}
+.prov-table th { font-weight: 600; color: var(--fg-dim); }
+.prov-table tbody tr:hover { background: var(--bg-2); }
+
+/* Free provider catalog cards */
+.free-providers { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.free-prov {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-1); padding: 10px 12px;
+}
+.free-prov-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.free-prov-title { font-weight: 600; font-size: 13px; }
+.free-prov-region {
+  font-size: 11px; padding: 1px 6px; border-radius: 9999px;
+  border: 1px solid var(--border); color: var(--fg-dim);
+}
+.free-prov-region.region-cn { color: #d97706; border-color: #d97706; }
+.free-prov-region.region-intl { color: #3b82f6; border-color: #3b82f6; }
+.free-prov-region.region-local { color: #1a7f37; border-color: #1a7f37; }
+.free-prov-link { font-size: 12px; color: var(--accent); text-decoration: none; }
+.free-prov-link:hover { text-decoration: underline; }
+.free-prov-copy {
+  margin-left: auto; font-size: 11px; padding: 2px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-1); color: var(--fg);
+  cursor: pointer;
+}
+.free-prov-copy:hover { border-color: var(--accent); }
+.free-prov-note { font-size: 12px; color: var(--fg-dim); margin: 6px 0 0; }
+.free-prov-yaml {
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-2); color: var(--fg);
+  padding: 8px 10px; border-radius: 6px;
+  margin: 8px 0 0; overflow-x: auto;
+  white-space: pre;
+}

@@ -185,6 +185,47 @@ function extractBlockText(block) {
   return out.join("");
 }
 
+/** Pull a short disambiguation hint from the element's surroundings.
+ * Looks at: nearest section heading (h1..h6), enclosing table caption, parent
+ * <th>/<dt> label, or infobox section header. Returns a compact string or "".
+ */
+function findContextHint(el) {
+  const parts = [];
+  // 1. If we're inside a <td>, the row's <th> or first <td> is a label.
+  const tr = el.closest("tr");
+  if (tr) {
+    const th = tr.querySelector("th");
+    const rowLabel = th && th !== el && !th.contains(el) ? th.textContent : null;
+    if (rowLabel) parts.push(rowLabel.trim().slice(0, 40));
+    const cap = el.closest("table")?.querySelector("caption");
+    if (cap) parts.push(cap.textContent.trim().slice(0, 40));
+  }
+  // 2. Nearest preceding heading within the same section/article.
+  const section = el.closest("section, article, [role='region'], .infobox, .mw-body-content") || document.body;
+  let scan = el;
+  while (scan && scan !== section) {
+    let prev = scan.previousElementSibling;
+    while (prev) {
+      if (/^H[1-6]$/.test(prev.tagName)) {
+        const head = prev.textContent.trim().slice(0, 60);
+        if (head) parts.push(head);
+        scan = section;  // done
+        break;
+      }
+      prev = prev.previousElementSibling;
+    }
+    scan = scan.parentElement;
+  }
+  // 3. De-dup and keep it short — tokens cost money.
+  const seen = new Set();
+  const out = [];
+  for (const p of parts) {
+    const s = p.replace(/\s+/g, " ").trim();
+    if (s && !seen.has(s)) { seen.add(s); out.push(s); }
+  }
+  return out.slice(0, 2).join(" · ").slice(0, 80);
+}
+
 function nearestBlock(node) {
   let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
   while (el && el !== document.body) {
@@ -233,7 +274,16 @@ export function findUnits(roots = [document.body]) {
       const text = normalizeText(extractBlockText(block));
       if (text.length < 2) continue;
       if (isAllPunctOrShort(text)) continue;
-      units.push({ el: block, text });
+      const unit = { el: block, text };
+      // For very short items, ambiguous terms ("Body", "Head", "List") lean on
+      // surrounding context. Attach a short hint pulled from the nearest
+      // ancestor heading / table caption / infobox section so the LLM can
+      // disambiguate. Long items don't need it.
+      if (text.length <= 40) {
+        const ctx = findContextHint(block);
+        if (ctx) unit.context = ctx;
+      }
+      units.push(unit);
     }
   }
   return units;

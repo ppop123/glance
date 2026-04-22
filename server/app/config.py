@@ -9,9 +9,23 @@ import yaml
 
 @dataclass
 class UpstreamCfg:
+    """Legacy single-upstream shape; kept so old config.yaml files still boot.
+    The loader converts this into a one-item ProviderCfg list transparently."""
     base_url: str
     api_key: str
     timeout_s: int
+
+
+@dataclass
+class ProviderCfg:
+    name: str               # short id used in model prefix: "deepseek:deepseek-chat"
+    base_url: str           # full /v1 endpoint (or equivalent)
+    api_key: str = ""       # "" for local LLMs (Ollama, vLLM) with no auth
+    protocol: str = "openai"  # "openai" | "anthropic" | "gemini" — only openai is implemented in v1
+    models: list[str] = field(default_factory=list)
+    enabled: bool = True
+    timeout_s: int = 60
+    label: str = ""         # human-readable label for UI (falls back to `name`)
 
 
 @dataclass
@@ -55,11 +69,32 @@ class AsrCfg:
 class Config:
     host: str
     port: int
-    upstream: UpstreamCfg
+    upstream: UpstreamCfg            # retained for backward compat / reference
+    providers: list[ProviderCfg]     # authoritative list used by the router
     defaults: DefaultsCfg
     cache: CacheCfg
     asr: AsrCfg
     log_level: str
+
+    def find_provider(self, name: str) -> ProviderCfg | None:
+        for p in self.providers:
+            if p.name == name:
+                return p
+        return None
+
+    def resolve_model(self, model: str | None) -> tuple[ProviderCfg, str]:
+        """Split 'provider:model' → (provider, model). If no prefix, use the
+        default provider and assume the plain model name is served by it."""
+        default = self.providers[0]
+        if not model:
+            return default, self.defaults.model
+        if ":" in model:
+            prefix, rest = model.split(":", 1)
+            p = self.find_provider(prefix)
+            if p and p.enabled:
+                return p, rest
+        # No prefix or unknown provider → default provider, pass model as-is.
+        return default, model
 
 
 def _expand(p: str) -> Path:
@@ -84,10 +119,40 @@ def load_config(path: str | Path | None = None) -> Config:
         k: ModelTuning(batch_size=int(v["batch_size"]), concurrency=int(v["concurrency"]))
         for k, v in per_model_raw.items()
     }
+    upstream = UpstreamCfg(**raw["upstream"])
+    # New-format `providers:` block wins when present; otherwise synthesize a
+    # single provider from the legacy `upstream:` block so old configs boot.
+    providers_raw = raw.get("providers") or []
+    if providers_raw:
+        providers = [
+            ProviderCfg(
+                name=str(p["name"]),
+                base_url=str(p["base_url"]).rstrip("/"),
+                api_key=str(p.get("api_key", "")),
+                protocol=str(p.get("protocol", "openai")),
+                models=[str(m) for m in p.get("models", [])],
+                enabled=bool(p.get("enabled", True)),
+                timeout_s=int(p.get("timeout_s", upstream.timeout_s)),
+                label=str(p.get("label", "")),
+            )
+            for p in providers_raw
+        ]
+    else:
+        providers = [ProviderCfg(
+            name="default",
+            base_url=upstream.base_url.rstrip("/"),
+            api_key=upstream.api_key,
+            protocol="openai",
+            models=[defaults_raw.get("model")] if defaults_raw.get("model") else [],
+            enabled=True,
+            timeout_s=upstream.timeout_s,
+            label="Default",
+        )]
     return Config(
         host=raw.get("host", "127.0.0.1"),
         port=int(raw.get("port", 8787)),
-        upstream=UpstreamCfg(**raw["upstream"]),
+        upstream=upstream,
+        providers=providers,
         defaults=DefaultsCfg(**defaults_raw, per_model=per_model),
         cache=CacheCfg(
             db_path=_expand(raw["cache"]["db_path"]),

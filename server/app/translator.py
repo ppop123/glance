@@ -12,6 +12,7 @@ import httpx
 from .cache import Cache, glossary_fingerprint
 from .config import Config
 from .prompts import build_messages, format_batch, parse_batch
+from .stats import StatsStore
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,9 @@ log = logging.getLogger(__name__)
 @dataclass
 class TranslateItem:
     text: str
-    tag: str | None = None       # optional site-stable id (e.g. "tweet:12345")
+    tag: str | None = None           # optional site-stable id (e.g. "tweet:12345")
+    context: str | None = None       # optional disambiguation hint for short terms
+                                     # ("Government section", "Osaka City infobox")
 
 
 POLISH_SYSTEM = (
@@ -48,14 +51,22 @@ class TranslateResult:
 
 
 class Translator:
-    def __init__(self, cfg: Config, cache: Cache):
+    def __init__(self, cfg: Config, cache: Cache, stats: StatsStore | None = None):
         self.cfg = cfg
         self.cache = cache
-        self.client = httpx.AsyncClient(
-            base_url=cfg.upstream.base_url,
-            timeout=cfg.upstream.timeout_s,
-            headers={"Authorization": f"Bearer {cfg.upstream.api_key}"},
-        )
+        self.stats = stats
+        # One httpx client per provider — different base_url, different auth,
+        # different timeout budget.
+        self._clients: dict[str, httpx.AsyncClient] = {}
+        for p in cfg.providers:
+            headers = {}
+            if p.api_key:
+                headers["Authorization"] = f"Bearer {p.api_key}"
+            self._clients[p.name] = httpx.AsyncClient(
+                base_url=p.base_url,
+                timeout=p.timeout_s,
+                headers=headers,
+            )
         self._default_sem = asyncio.Semaphore(cfg.defaults.concurrency)
         # Per-model semaphores so one slow model's queue doesn't starve another.
         self._model_sems: dict[str, asyncio.Semaphore] = {}
@@ -63,20 +74,25 @@ class Translator:
             self._model_sems[name] = asyncio.Semaphore(tuning.concurrency)
 
     def _tuning_for(self, model: str) -> tuple[int, asyncio.Semaphore]:
-        """Return (batch_size, semaphore) for the given model."""
-        tuning = (self.cfg.defaults.per_model or {}).get(model)
-        if tuning:
-            return tuning.batch_size, self._model_sems[model]
+        """Return (batch_size, semaphore) for the given model (after prefix
+        stripping). Matches both raw names ("claude-haiku-4-5") and prefixed
+        names ("ccpa:claude-haiku-4-5")."""
+        for key in (model, model.split(":")[-1]):
+            tuning = (self.cfg.defaults.per_model or {}).get(key)
+            if tuning:
+                return tuning.batch_size, self._model_sems[key]
         return self.cfg.defaults.batch_size, self._default_sem
 
     async def aclose(self) -> None:
-        await self.client.aclose()
+        for c in self._clients.values():
+            await c.aclose()
 
     async def polish(self, texts: list[str], *, language: str, model: str | None = None) -> list[str]:
         """ASR-correction pass. Fix typos / homophones / missing chars in-place, same line count."""
         if not texts:
             return texts
-        mdl = model or self.cfg.defaults.model
+        mdl_in = model or self.cfg.defaults.model
+        provider, mdl = self.cfg.resolve_model(mdl_in)
         sys = POLISH_SYSTEM.format(language=language)
         body = {
             "model": mdl,
@@ -89,8 +105,9 @@ class Translator:
             "stream": True,
         }
         parts: list[str] = []
+        client = self._clients[provider.name]
         try:
-            async with self.client.stream("POST", "/chat/completions", json=body) as r:
+            async with client.stream("POST", "/chat/completions", json=body) as r:
                 r.raise_for_status()
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data: "):
@@ -165,10 +182,11 @@ class Translator:
             async def run_batch(indices: list[int]) -> None:
                 nonlocal upstream_calls, inferred_topic, topic_reason
                 texts = [items[i].text for i in indices]
+                contexts = [items[i].context for i in indices]
                 async with sem:
                     upstream_calls += 1
                     try:
-                        translated, batch_topic, batch_reason = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
+                        translated, batch_topic, batch_reason = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary, contexts=contexts)
                         if inferred_topic is None:  # first batch's topic wins for reporting
                             inferred_topic, topic_reason = batch_topic, batch_reason
                         # Safety net: if any item targeted zh* came back identical AND the source
@@ -284,9 +302,10 @@ class Translator:
 
         async def run_batch(indices: list[int]) -> list[dict]:
             texts = [items[i].text for i in indices]
+            contexts = [items[i].context for i in indices]
             async with sem:
                 try:
-                    translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary)
+                    translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic, glossary=glossary, contexts=contexts)
                 except Exception as e:
                     log.warning("stream batch failed: %s (size=%d)", e, len(texts))
                     translated = [None] * len(texts)
@@ -324,41 +343,68 @@ class Translator:
     async def _call_upstream(
         self, texts: list[str], *, target: str, model: str, site: str | None, topic: str | None = None,
         glossary: list[tuple[str, str]] | None = None,
+        contexts: list[str | None] | None = None,
     ) -> tuple[list[str | None], str | None, str]:
         """Stream from the upstream and concatenate deltas.
 
-        Streaming works for every model the gateway routes to — including Claude —
-        but it's REQUIRED for gpt-5.x reasoning models, since ccpa non-stream drops
-        the visible content while streaming exposes it via chat.completion.chunk
-        deltas.
+        `model` may be a plain name ("claude-haiku-4-5") or prefixed
+        ("deepseek:deepseek-chat") — we split and route to the matching provider.
+        Streaming works for every OpenAI-compatible gateway we target today;
+        it's also REQUIRED for gpt-5.x reasoning models, since ccpa non-stream
+        drops visible content while stream exposes it via delta chunks.
         """
-        msgs, resolved_topic, topic_reason = build_messages(texts, target_lang=target, site=site, topic=topic, glossary=glossary)
+        provider, mdl_name = self.cfg.resolve_model(model)
+        msgs, resolved_topic, topic_reason = build_messages(
+            texts, target_lang=target, site=site, topic=topic, glossary=glossary,
+            contexts=contexts,
+        )
         body = {
-            "model": model,
+            "model": mdl_name,
             "messages": msgs,
             "temperature": self.cfg.defaults.temperature,
             "max_tokens": self.cfg.defaults.max_output_tokens,
             "stream": True,
         }
+        client = self._clients[provider.name]
         content_parts: list[str] = []
-        async with self.client.stream("POST", "/chat/completions", json=body) as r:
-            r.raise_for_status()
-            async for line in r.aiter_lines():
-                if not line or not line.startswith("data: "):
-                    continue
-                payload = line[6:]
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json_loads(payload)
-                except Exception:
-                    continue
-                try:
-                    delta = data["choices"][0]["delta"].get("content")
-                except (KeyError, IndexError):
-                    delta = None
-                if delta:
-                    content_parts.append(delta)
+        tokens_in = 0
+        tokens_out = 0
+        t0 = time.perf_counter()
+        error = False
+        try:
+            async with client.stream("POST", "/chat/completions", json=body) as r:
+                r.raise_for_status()
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json_loads(payload)
+                    except Exception:
+                        continue
+                    try:
+                        delta = data["choices"][0]["delta"].get("content")
+                    except (KeyError, IndexError):
+                        delta = None
+                    if delta:
+                        content_parts.append(delta)
+                    # Upstream usually attaches usage on the final chunk.
+                    usage = data.get("usage") if isinstance(data, dict) else None
+                    if usage:
+                        tokens_in = int(usage.get("prompt_tokens") or 0) or tokens_in
+                        tokens_out = int(usage.get("completion_tokens") or 0) or tokens_out
+        except Exception:
+            error = True
+            raise
+        finally:
+            if self.stats is not None:
+                self.stats.record(
+                    provider=provider.name, model=mdl_name,
+                    latency_ms=(time.perf_counter() - t0) * 1000.0,
+                    error=error, tokens_in=tokens_in, tokens_out=tokens_out,
+                )
         content = "".join(content_parts)
         parsed = parse_batch(content, len(texts))
         if len(texts) == 1 and parsed[0] is None and content.strip():

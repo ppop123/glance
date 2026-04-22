@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
+from .stats import StatsStore
 from .translator import TranslateItem, Translator
 from .vtt_cache import VttCache, canonical_url
 
@@ -20,6 +21,7 @@ from .vtt_cache import VttCache, canonical_url
 class Item(BaseModel):
     text: str
     tag: str | None = None
+    context: str | None = None   # short hint for disambiguation — ancestor heading, etc.
 
 
 class TranslateReq(BaseModel):
@@ -57,7 +59,9 @@ log = logging.getLogger("fanyi")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.cache = Cache(cfg.cache)
-    app.state.translator = Translator(cfg, app.state.cache)
+    # Stats DB lives next to the translation cache — small and disposable.
+    app.state.stats = StatsStore(cfg.cache.db_path.parent / "provider_stats.sqlite3")
+    app.state.translator = Translator(cfg, app.state.cache, app.state.stats)
     app.state.asr_client = httpx.AsyncClient(base_url=cfg.asr.base_url, timeout=cfg.asr.timeout_s) if cfg.asr.enabled else None
     # VTT transcripts live in a separate DB so purging translation cache doesn't nuke expensive ASR output
     vtt_path = cfg.cache.db_path.parent / "vtt.sqlite3"
@@ -98,7 +102,7 @@ async def translate(req: TranslateReq):
         raise HTTPException(400, "max 200 items per request")
     tr = app.state.translator
     result = await tr.translate(
-        [TranslateItem(text=i.text, tag=i.tag) for i in req.items],
+        [TranslateItem(text=i.text, tag=i.tag, context=i.context) for i in req.items],
         target_lang=req.target_lang,
         model=req.model,
         site=req.site,
@@ -133,7 +137,7 @@ async def translate_stream(req: TranslateReq):
     async def gen():
         try:
             async for chunk in tr.translate_stream(
-                [TranslateItem(text=i.text, tag=i.tag) for i in req.items],
+                [TranslateItem(text=i.text, tag=i.tag, context=i.context) for i in req.items],
                 target_lang=req.target_lang,
                 model=req.model,
                 site=req.site,
@@ -158,6 +162,13 @@ async def cache_stats():
     return app.state.cache.stats()
 
 
+@app.get("/providers/stats")
+async def providers_stats(days: int = 30):
+    """Per-provider call stats — latency, success rate, token usage."""
+    rows = app.state.stats.aggregate(days=max(1, min(365, days)))
+    return {"days": days, "rows": rows}
+
+
 @app.post("/cache/invalidate")
 async def cache_invalidate(req: InvalidateReq):
     removed = app.state.cache.invalidate_all()
@@ -172,6 +183,19 @@ async def public_config():
         "default_target": cfg.defaults.target_lang,
         "batch_size": cfg.defaults.batch_size,
         "asr_enabled": cfg.asr.enabled,
+        "providers": [
+            {
+                "name": p.name,
+                "label": p.label or p.name,
+                "protocol": p.protocol,
+                "models": list(p.models),
+                "enabled": p.enabled,
+                # Don't leak api_key or full base_url path; extension just needs
+                # to know which provider:model strings are valid.
+            }
+            for p in cfg.providers
+            if p.enabled
+        ],
     }
 
 

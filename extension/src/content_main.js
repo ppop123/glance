@@ -289,7 +289,7 @@ async function translateUnits(units) {
   let applied = 0;
   try {
     await translateStream(
-      unique.map(u => ({ text: u.text, tag: u.tag || null })),
+      unique.map(u => ({ text: u.text, tag: u.tag || null, context: u.context || null })),
       {
         site: state.adapter.site || location.hostname,
         topic: state.adapter.topic || null,

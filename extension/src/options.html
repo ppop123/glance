@@ -96,6 +96,18 @@
     </section>
 
     <section class="card">
+      <h2>LLM 服务商使用情况（近 30 天）</h2>
+      <p class="hint">每次调用的延迟、成功率、token 用量。用来判断各家服务商在本地的表现。</p>
+      <div id="providerStats" class="prov-stats"><em class="hint">加载中…</em></div>
+    </section>
+
+    <section class="card">
+      <h2>添加 LLM 服务商</h2>
+      <p class="hint">服务商在服务器 <code>config.yaml</code> 的 <code>providers:</code> 列表里配置。下面是一些常见的免费 / 低价选项，点一个看详情即可复制到 config 里。修改后需要 <code>launchctl kickstart -k gui/$(id -u)/com.fanyi.server</code> 或重启服务生效。</p>
+      <div id="freeProviders" class="free-providers"></div>
+    </section>
+
+    <section class="card">
       <h2>缓存</h2>
       <div class="kv" id="cacheSummary">加载中…</div>
       <div class="row" style="margin-top:8px">

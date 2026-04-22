@@ -54,7 +54,7 @@ async function refreshServer() {
     const c = await getConfig();
     dot.className = "dot ok";
     $("#serverText").textContent = `${c.default_model} → ${c.default_target}`;
-    // reflect server defaults into UI if user hasn't set a pref
+    populateModelDropdown(c.providers || [], c.default_model);
     const prefs = await chrome.storage.sync.get({ model: null, targetLang: null });
     $("#model").value = prefs.model || c.default_model;
     $("#targetLang").value = prefs.targetLang || c.default_target;
@@ -135,6 +135,38 @@ $("#sub-go").addEventListener("click", async () => {
     $("#sub-status").textContent = `✗ ${e?.message || e}`;
   }
 });
+
+/** Rebuild the model <select> from server-reported providers. Single-provider
+ * case renders flat; multi-provider renders <optgroup> per provider so the
+ * user can tell DeepSeek's "chat" from OpenRouter's "chat" at a glance. */
+function populateModelDropdown(providers, defaultModel) {
+  const sel = $("#model");
+  const current = sel.value;
+  sel.innerHTML = "";
+  if (!providers.length) return;
+  const multi = providers.length > 1;
+  for (const p of providers) {
+    const parent = multi ? (() => {
+      const g = document.createElement("optgroup");
+      g.label = p.label || p.name;
+      sel.appendChild(g);
+      return g;
+    })() : sel;
+    for (const m of (p.models || [])) {
+      const opt = document.createElement("option");
+      // Always stable provider:model form so the server can route unambiguously.
+      opt.value = `${p.name}:${m}`;
+      opt.textContent = multi ? m : `${m}`;
+      parent.appendChild(opt);
+    }
+  }
+  // Prefer previous user pick → server default → first option.
+  const desired = current || defaultModel;
+  if (!desired) return;
+  let opt = sel.querySelector(`option[value="${CSS.escape(desired)}"]`);
+  if (!opt) opt = Array.from(sel.querySelectorAll("option")).find(o => o.value.endsWith(":" + desired));
+  if (opt) sel.value = opt.value;
+}
 
 async function getServerUrl() {
   const { serverUrl = DEFAULT_URL } = await chrome.storage.sync.get({ serverUrl: DEFAULT_URL });

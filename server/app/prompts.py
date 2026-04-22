@@ -306,12 +306,22 @@ MARK_CLOSE = "\u27e7"  # ⟧
 ITEM_SEP = "==="       # delimits items; placed on its own line
 
 
-def format_batch(texts: list[str]) -> str:
-    """Each item on its own 'block':  ⟦N⟧\\n<content-with-real-newlines>\\n===\\n..."""
+def format_batch(texts: list[str], *, contexts: list[str | None] | None = None) -> str:
+    """Each item on its own 'block':  ⟦N⟧\\n<content-with-real-newlines>\\n===\\n...
+
+    If a context hint is supplied for an item, it's appended on its own final
+    line as `(ctx: ...)` — the model is instructed in the system prompt to use
+    it for disambiguation and NOT to echo it in the output."""
     chunks: list[str] = []
     for i, t in enumerate(texts, 1):
         clean = (t or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-        chunks.append(f"{MARK_OPEN}{i}{MARK_CLOSE}\n{clean}")
+        ctx = None
+        if contexts and i - 1 < len(contexts):
+            ctx = (contexts[i - 1] or "").strip() or None
+        block = f"{MARK_OPEN}{i}{MARK_CLOSE}\n{clean}"
+        if ctx:
+            block += f"\n(ctx: {ctx})"
+        chunks.append(block)
     return f"\n{ITEM_SEP}\n".join(chunks)
 
 
@@ -380,6 +390,7 @@ def build_messages(
     site: str | None = None,
     topic: str | None = None,
     glossary: list[tuple[str, str]] | None = None,
+    contexts: list[str | None] | None = None,
 ) -> tuple[list[dict], str | None, str]:
     """Returns (messages, resolved_topic, reason).
     `reason` is one of: 'explicit' | 'content' | 'host' | 'none'."""
@@ -397,8 +408,16 @@ def build_messages(
                 f"\n\nGlossary (force these exact translations; case-insensitive match, "
                 f"preserve original spacing/punctuation around matched terms):\n{lines}"
             )
+    if contexts and any(contexts):
+        sys = sys + (
+            "\n\nSome items carry a '(ctx: ...)' suffix. That suffix is a "
+            "disambiguation hint for SHORT ambiguous terms (e.g. a lone 'Body' "
+            "under a 'Government' infobox should render as the governmental "
+            "sense, not the document sense). DO NOT include the ctx suffix in "
+            "your output — translate only the main term."
+        )
     msgs = [
         {"role": "system", "content": sys},
-        {"role": "user", "content": format_batch(texts)},
+        {"role": "user", "content": format_batch(texts, contexts=contexts)},
     ]
     return msgs, resolved, reason
