@@ -1,6 +1,7 @@
 """FastAPI entrypoint. Run: uv run uvicorn app.main:app --host 127.0.0.1 --port 8787"""
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -111,6 +112,41 @@ async def translate(req: TranslateReq):
         latency_ms=result.latency_ms,
         inferred_topic=result.inferred_topic,
         topic_reason=result.topic_reason,
+    )
+
+
+@app.post("/translate/stream")
+async def translate_stream(req: TranslateReq):
+    """SSE endpoint: pushes each batch of translations as soon as it lands.
+
+    Event format: `data: {"items": [{"i": int, "translation": str, "cached"?: bool, "failed"?: bool}]}`
+    Terminal event: `data: [DONE]`. Errors surface as `data: {"error": "..."}` before [DONE].
+    """
+    if not req.items:
+        raise HTTPException(400, "items required")
+    if len(req.items) > 2000:
+        raise HTTPException(400, "max 2000 items per request")
+    tr = app.state.translator
+
+    async def gen():
+        try:
+            async for chunk in tr.translate_stream(
+                [TranslateItem(text=i.text, tag=i.tag) for i in req.items],
+                target_lang=req.target_lang,
+                model=req.model,
+                site=req.site,
+                topic=req.topic,
+            ):
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            log.exception("translate_stream failed")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

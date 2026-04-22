@@ -29,7 +29,6 @@ export const MARK_ATTR = "data-fanyi-id";
 export const SRC_HASH_ATTR = "data-fanyi-src";    // short hash of the last-translated source text
 export const WRAPPER_TAG = "font";
 export const WRAPPER_CLASS = "fanyi-translation";
-export const LOADING_CLASS = "fanyi-loading";
 
 // djb2 — small, fast, collision-resistant enough for "has the text changed?"
 export function cheapHash(s) {
@@ -178,23 +177,6 @@ export function clearUnit(el) {
   if (w) w.remove();
   el.removeAttribute(SRC_HASH_ATTR);
   // keep MARK_ATTR so idCounter stays stable; the stale check forces re-queue
-}
-
-/** Insert a spinner placeholder while a batch is in flight. Replaced by appendTranslation on success. */
-export function appendLoading(el) {
-  if (el.querySelector(`:scope > .${WRAPPER_CLASS}`)) return;
-  const wrap = document.createElement(WRAPPER_TAG);
-  wrap.className = `${WRAPPER_CLASS} ${LOADING_CLASS}`;
-  wrap.setAttribute("data-fanyi-wrapper", "1");
-  wrap.setAttribute("role", "status");
-  wrap.setAttribute("aria-label", "翻译中");
-  wrap.textContent = "翻译中";
-  el.appendChild(wrap);
-}
-
-export function clearLoading(el) {
-  const w = el.querySelector(`:scope > .${WRAPPER_CLASS}.${LOADING_CLASS}`);
-  if (w) w.remove();
 }
 
 /**

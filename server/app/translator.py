@@ -219,6 +219,79 @@ class Translator:
             topic_reason=topic_reason,
         )
 
+    async def translate_stream(
+        self,
+        items: list[TranslateItem],
+        *,
+        target_lang: str | None = None,
+        model: str | None = None,
+        site: str | None = None,
+        topic: str | None = None,
+    ):
+        """Async generator: yield batches as soon as they complete.
+
+        Each yielded chunk: {"items": [{"i": int, "translation": str, "cached"?: bool, "failed"?: bool}]}.
+        Cache hits flushed in one chunk first, then LLM batches via asyncio.as_completed.
+        """
+        target = target_lang or self.cfg.defaults.target_lang
+        mdl = model or self.cfg.defaults.model
+
+        miss_idx: list[int] = []
+        hits: list[dict] = []
+        for i, it in enumerate(items):
+            got = None
+            if it.tag:
+                got = self.cache.get_tag(it.tag, model=mdl, target=target)
+            if got is None:
+                got = self.cache.get_text(it.text, model=mdl, target=target)
+            if got is not None:
+                hits.append({"i": i, "translation": got, "cached": True})
+            else:
+                miss_idx.append(i)
+
+        if hits:
+            yield {"items": hits}
+
+        if not miss_idx:
+            return
+
+        bs = self.cfg.defaults.batch_size
+        batches = [miss_idx[s : s + bs] for s in range(0, len(miss_idx), bs)]
+
+        async def run_batch(indices: list[int]) -> list[dict]:
+            texts = [items[i].text for i in indices]
+            async with self._sem:
+                try:
+                    translated, _, _ = await self._call_upstream(texts, target=target, model=mdl, site=site, topic=topic)
+                except Exception as e:
+                    log.warning("stream batch failed: %s (size=%d)", e, len(texts))
+                    translated = [None] * len(texts)
+            out: list[dict] = []
+            for local_i, global_i in enumerate(indices):
+                tr = translated[local_i] if local_i < len(translated) else None
+                if tr is None:
+                    out.append({"i": global_i, "translation": items[global_i].text, "failed": True})
+                else:
+                    out.append({"i": global_i, "translation": tr})
+                    self.cache.put(
+                        text=items[global_i].text,
+                        translation=tr,
+                        model=mdl,
+                        target=target,
+                        tag=items[global_i].tag,
+                    )
+            return out
+
+        tasks = [asyncio.create_task(run_batch(b)) for b in batches]
+        try:
+            for coro in asyncio.as_completed(tasks):
+                batch_result = await coro
+                yield {"items": batch_result}
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            raise
+
     async def _call_upstream(
         self, texts: list[str], *, target: str, model: str, site: str | None, topic: str | None = None
     ) -> tuple[list[str | None], str | None, str]:

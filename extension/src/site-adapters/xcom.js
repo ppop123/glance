@@ -35,7 +35,7 @@ function ensureSubtitleButtonStyle() {
   st.id = "fanyi-sub-style";
   st.textContent = `
     .${SUB_WRAP_CLASS} {
-      position: absolute; right: 8px; bottom: 8px;
+      position: absolute; right: 8px; top: 8px;
       z-index: 10;
       opacity: 0;
       transition: opacity .18s;
@@ -43,7 +43,9 @@ function ensureSubtitleButtonStyle() {
       font: 500 12px/1.2 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
       color: #fff;
     }
-    [data-testid="videoPlayer"]:hover .${SUB_WRAP_CLASS},
+    /* JS toggles .fanyi-hover on the wrap via pointer events on the video container — more
+       reliable than CSS :hover, which can flicker when X's control overlay captures the cursor. */
+    .${SUB_WRAP_CLASS}.fanyi-hover,
     .${SUB_WRAP_CLASS}.fanyi-open,
     .${SUB_WRAP_CLASS}.fanyi-working,
     .${SUB_WRAP_CLASS}[data-loading="1"] {
@@ -162,6 +164,21 @@ function addSubtitleButton(article) {
     wrap._fanyiVideo = video;
     wrap._fanyiPermalink = permalink;
     container.appendChild(wrap);
+
+    // Reliable hover gating — tracks pointer over the real video container region.
+    // Use pointerenter/pointerleave so briefly entering the wrap's own area counts as hover.
+    const setHover = (on) => {
+      if (on) wrap.classList.add("fanyi-hover");
+      else wrap.classList.remove("fanyi-hover");
+    };
+    container.addEventListener("pointerenter", () => setHover(true));
+    container.addEventListener("pointerleave", (ev) => {
+      // Keep visible if leaving into the menu, or if a job is in flight.
+      const to = ev.relatedTarget;
+      if (to && wrap.contains(to)) return;
+      if (wrap.classList.contains("fanyi-open") || wrap.classList.contains("fanyi-working")) return;
+      setHover(false);
+    });
   }
 }
 

@@ -56,6 +56,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // async
 });
 
+// Long-lived port for /translate/stream. Content script opens one port per stream, posts
+// `{type:"start",url,body}`, and receives `{type:"chunk",data}`, `{type:"done"}`, or
+// `{type:"error",error}` messages as the SSE response is parsed here.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "fanyi-translate-stream") return;
+  let aborted = false;
+  let reader = null;
+  port.onDisconnect.addListener(() => {
+    aborted = true;
+    reader?.cancel().catch(() => {});
+  });
+  port.onMessage.addListener(async (msg) => {
+    if (msg?.type !== "start") return;
+    try {
+      const resp = await fetch(msg.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(msg.body),
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        if (!aborted) port.postMessage({ type: "error", error: `http ${resp.status}: ${text.slice(0, 200)}` });
+        return;
+      }
+      reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!aborted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() || "";
+        for (const ev of events) {
+          const line = ev.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") {
+            if (!aborted) port.postMessage({ type: "done" });
+            return;
+          }
+          try {
+            const data = JSON.parse(payload);
+            if (!aborted) port.postMessage({ type: "chunk", data });
+          } catch { /* ignore malformed chunk */ }
+        }
+      }
+      if (!aborted) port.postMessage({ type: "done" });
+    } catch (e) {
+      if (!aborted) port.postMessage({ type: "error", error: String(e?.message || e) });
+    }
+  });
+});
+
 async function toggleActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !/^https?:/.test(tab.url || "")) return;

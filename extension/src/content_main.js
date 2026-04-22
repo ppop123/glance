@@ -1,8 +1,8 @@
 // Main translation engine. Exported: boot(), toggle(), enable(), disable(), retranslate().
 // Loaded via dynamic import from content_guard.js.
 
-import { translateBatch } from "./lib/client.js";
-import { appendTranslation, appendLoading, clearLoading, markUnit, removeAllTranslations, sameLanguageAs, isStale, clearUnit, MARK_ATTR, SRC_HASH_ATTR } from "./lib/walker.js";
+import { translateStream } from "./lib/client.js";
+import { appendTranslation, markUnit, removeAllTranslations, sameLanguageAs, isStale, clearUnit, MARK_ATTR } from "./lib/walker.js";
 import { pickPrimaryVideo, transcribeVideo } from "./subtitle.js";
 
 const DEFAULT_AUTO_SITES = ["x.com", "twitter.com", "github.com"];
@@ -45,19 +45,90 @@ async function pickAdapter() {
 
 // ---- Translation pipeline ---------------------------------------------------
 
+const FAIL_ATTR = "data-fanyi-fail";
+const MAX_FAILS = 3;
+
+/** Bump per-element fail count; return true iff we should allow another retry. */
+function markFailure(el) {
+  const n = (parseInt(el.getAttribute(FAIL_ATTR) || "0", 10) || 0) + 1;
+  el.setAttribute(FAIL_ATTR, String(n));
+  return n < MAX_FAILS;
+}
+
+/* ── Global progress pill ─────────────────────────────────────────────────
+ * One floating status badge, bottom-right. Replaces the per-unit spinners that
+ * turned dense pages (Wikipedia ~600 units) into visual noise. Click to cancel. */
+let pillTotal = 0;
+let pillDone = 0;
+let pillEl = null;
+let pillHideTimer = null;
+
+function pillEnsure() {
+  if (pillEl) return;
+  pillEl = document.createElement("div");
+  pillEl.className = "fanyi-progress";
+  pillEl.setAttribute("data-fanyi-skip", "1");
+  pillEl.setAttribute("data-fanyi-wrapper", "1");
+  pillEl.setAttribute("role", "status");
+  pillEl.setAttribute("aria-live", "polite");
+  pillEl.title = "点击取消翻译";
+  pillEl.innerHTML = `<span class="fanyi-progress-spin"></span><span class="fanyi-progress-text">翻译中</span>`;
+  pillEl.addEventListener("click", () => disable());
+  document.documentElement.appendChild(pillEl);
+  if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
+}
+
+function pillRender() {
+  if (!pillEl) return;
+  const txt = pillEl.querySelector(".fanyi-progress-text");
+  const remaining = pillTotal - pillDone;
+  if (pillTotal > 0 && remaining <= 0) {
+    pillEl.classList.add("fanyi-progress-done");
+    pillEl.title = "翻译完成";
+    txt.textContent = `已完成 ${pillTotal}`;
+  } else {
+    pillEl.classList.remove("fanyi-progress-done");
+    pillEl.title = "点击取消翻译";
+    txt.textContent = `翻译中 ${pillDone}/${pillTotal}`;
+  }
+}
+
+function pillAdd(n) {
+  if (n <= 0) return;
+  pillTotal += n;
+  pillEnsure();
+  pillRender();
+}
+
+function pillAdvance(n) {
+  if (n <= 0) return;
+  pillDone += n;
+  pillRender();
+  if (pillDone >= pillTotal) {
+    if (pillHideTimer) clearTimeout(pillHideTimer);
+    pillHideTimer = setTimeout(pillReset, 1500);
+  }
+}
+
+function pillReset() {
+  pillTotal = 0;
+  pillDone = 0;
+  if (pillEl) { pillEl.remove(); pillEl = null; }
+  if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
+}
+
 async function translateUnits(units) {
   if (!units.length) return;
-  // de-dup + same-language skip, but RE-TRANSLATE when marked element's source text changed (e.g. X "Show more" expansion).
   const fresh = [];
   let skippedSame = 0;
   let retranslate = 0;
   for (const u of units) {
     const marked = u.el.hasAttribute(MARK_ATTR);
     const stale = marked && isStale(u.el, u.text);
-    if (marked && !stale) continue;                    // already translated with current text
+    if (marked && !stale) continue;
     if (stale) {
-      clearUnit(u.el);                                 // drop the old wrapper
-      u.el.removeAttribute(FAIL_ATTR);                 // fresh text → fresh retry budget
+      clearUnit(u.el);
+      u.el.removeAttribute(FAIL_ATTR);
       retranslate++;
     }
     if (sameLanguageAs(u.text, state.target)) {
@@ -72,73 +143,54 @@ async function translateUnits(units) {
     if (skippedSame || retranslate) console.info("[fanyi] skipped %d same-lang, %d re-translated", skippedSame, retranslate);
     return;
   }
-  console.info("[fanyi] dispatching %d fresh (skipped %d same-lang, %d re-translated)", fresh.length, skippedSame, retranslate);
+  console.info("[fanyi] streaming %d fresh (skipped %d same-lang, %d re-translated)", fresh.length, skippedSame, retranslate);
 
-  // Split into reasonable chunks; backend batches further internally.
-  const CHUNK = 30;
-  const tasks = [];
-  for (let i = 0; i < fresh.length; i += CHUNK) {
-    const group = fresh.slice(i, i + CHUNK);
-    tasks.push(dispatch(group));
-  }
-  await Promise.all(tasks);
-}
-
-const FAIL_ATTR = "data-fanyi-fail";
-const MAX_FAILS = 3;
-
-/** Bump per-element fail count; return true iff we should allow another retry. */
-function markFailure(el) {
-  const n = (parseInt(el.getAttribute(FAIL_ATTR) || "0", 10) || 0) + 1;
-  el.setAttribute(FAIL_ATTR, String(n));
-  return n < MAX_FAILS;
-}
-
-async function dispatch(group) {
   const ac = new AbortController();
   const key = Symbol();
   state.inflight.set(key, ac);
-  for (const u of group) {
-    if (u.el.isConnected) appendLoading(u.el);
-  }
+  pillAdd(fresh.length);
+
+  let applied = 0;
   try {
-    const payload = group.map(u => ({ text: u.text, tag: u.tag || null }));
-    console.info("[fanyi] dispatch batch size=%d site=%s model=%s target=%s", payload.length, state.adapter.site, state.model || "(default)", state.target);
-    const res = await translateBatch(payload, {
-      site: state.adapter.site || location.hostname,
-      topic: state.adapter.topic || null,
-      model: state.model,
-      target: state.target,
-      signal: ac.signal,
-    });
-    console.info("[fanyi] batch ok: hits=%o latency=%dms upstream=%d", res.cache_hits, res.latency_ms, res.upstream_calls);
-    // Background fetch cannot be aborted; if the user disabled while we waited, drop silently.
-    if (!state.enabled) {
-      for (const u of group) clearLoading(u.el);
-      return;
-    }
-    for (let i = 0; i < group.length; i++) {
-      const el = group[i].el;
-      const tr = res.translations[i];
-      if (!el.isConnected) continue;
-      if (!tr) {
-        clearLoading(el);
-        // Allow future scans to re-queue this unit (bounded by MAX_FAILS so we don't loop on
-        // a block that genuinely can't be translated).
-        if (markFailure(el)) el.removeAttribute(MARK_ATTR);
-        continue;
+    await translateStream(
+      fresh.map(u => ({ text: u.text, tag: u.tag || null })),
+      {
+        site: state.adapter.site || location.hostname,
+        topic: state.adapter.topic || null,
+        model: state.model,
+        target: state.target,
+        signal: ac.signal,
+        onChunk: (data) => {
+          if (!state.enabled || !data?.items) return;
+          let n = 0;
+          for (const it of data.items) {
+            const u = fresh[it.i];
+            n++;
+            if (!u || !u.el.isConnected) continue;
+            if (it.failed) {
+              if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+            } else {
+              u.el.removeAttribute(FAIL_ATTR);
+              appendTranslation(u.el, it.translation);
+            }
+          }
+          applied += n;
+          pillAdvance(n);
+        },
       }
-      el.removeAttribute(FAIL_ATTR);
-      appendTranslation(el, tr);
-    }
+    );
   } catch (e) {
-    if (e.name !== "AbortError") console.warn("[fanyi] batch failed (size=%d):", group.length, e);
-    for (const u of group) {
-      clearLoading(u.el);
-      if (u.el.isConnected && markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+    console.warn("[fanyi] stream failed:", e);
+    // Anything we never got back: requeue for retry.
+    for (const u of fresh) {
+      if (u.el.isConnected && !u.el.querySelector(":scope > .fanyi-translation")) {
+        if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+      }
     }
   } finally {
     state.inflight.delete(key);
+    // Drain pill counter for any items the stream skipped (error, disconnect, aborted).
+    if (applied < fresh.length) pillAdvance(fresh.length - applied);
   }
 }
 
@@ -198,6 +250,17 @@ export async function boot() {
     });
   });
 
+  // Page-world postMessage bridge for toggle/enable/disable — useful from DevTools
+  // consoles and for automated browser tests.
+  //   window.postMessage({ __fanyi: 'toggle' }, '*')
+  window.addEventListener("message", (ev) => {
+    if (ev.source !== window) return;
+    const cmd = ev.data?.__fanyi;
+    if (cmd === "toggle") toggle();
+    else if (cmd === "enable") enable();
+    else if (cmd === "disable") disable();
+  });
+
   // Load user prefs from storage.
   const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model"]).catch(() => ({}));
   const autoSites = Array.isArray(prefs.autoSites) && prefs.autoSites.length ? prefs.autoSites : DEFAULT_AUTO_SITES;
@@ -246,6 +309,7 @@ export function disable() {
   for (const [, ac] of state.inflight) ac.abort();
   state.inflight.clear();
   removeAllTranslations();
+  pillReset();
 }
 
 export async function toggle() {
