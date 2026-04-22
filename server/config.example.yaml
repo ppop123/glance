@@ -23,9 +23,11 @@ defaults:
 # Cache
 cache:
   db_path: "~/.fanyi-ext/cache.sqlite3"
-  ttl_days: 7
+  ttl_days: 7             # base TTL for a cold entry (0 hits), measured from last access
   max_entries: 100000
   glossary_version: 1     # bump to invalidate all entries on prompt/glossary change
+  hit_bonus_days: 3       # +days added per cache hit (frequently-read content persists longer)
+  max_ttl_days: 180       # hard cap regardless of hit count
 
 # ASR (Phase 2, proxied to mac mini)
 asr:

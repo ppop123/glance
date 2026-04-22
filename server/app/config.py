@@ -27,9 +27,11 @@ class DefaultsCfg:
 @dataclass
 class CacheCfg:
     db_path: Path
-    ttl_days: int
+    ttl_days: int           # base TTL for a cold entry (0 hits), measured from last_hit_at
     max_entries: int
     glossary_version: int
+    hit_bonus_days: int = 3  # +days added per cache hit — frequently accessed entries live longer
+    max_ttl_days: int = 180  # hard cap regardless of hit count
 
 
 @dataclass
@@ -76,6 +78,8 @@ def load_config(path: str | Path | None = None) -> Config:
             ttl_days=int(raw["cache"]["ttl_days"]),
             max_entries=int(raw["cache"]["max_entries"]),
             glossary_version=int(raw["cache"]["glossary_version"]),
+            hit_bonus_days=int(raw["cache"].get("hit_bonus_days", 3)),
+            max_ttl_days=int(raw["cache"].get("max_ttl_days", 180)),
         ),
         asr=AsrCfg(**raw["asr"]),
         log_level=raw.get("log_level", "info"),
