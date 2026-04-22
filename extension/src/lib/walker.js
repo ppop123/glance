@@ -216,5 +216,9 @@ export function appendTranslation(el, translated) {
 
 export function removeAllTranslations(root = document.body) {
   root.querySelectorAll(`.${WRAPPER_CLASS}`).forEach(n => n.remove());
-  root.querySelectorAll(`[${MARK_ATTR}]`).forEach(n => n.removeAttribute(MARK_ATTR));
+  root.querySelectorAll(`[${MARK_ATTR}]`).forEach(n => {
+    n.removeAttribute(MARK_ATTR);
+    n.removeAttribute(SRC_HASH_ATTR);
+    n.removeAttribute("data-fanyi-fail");
+  });
 }

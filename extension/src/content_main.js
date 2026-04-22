@@ -57,6 +57,7 @@ async function translateUnits(units) {
     if (marked && !stale) continue;                    // already translated with current text
     if (stale) {
       clearUnit(u.el);                                 // drop the old wrapper
+      u.el.removeAttribute(FAIL_ATTR);                 // fresh text → fresh retry budget
       retranslate++;
     }
     if (sameLanguageAs(u.text, state.target)) {
@@ -83,6 +84,16 @@ async function translateUnits(units) {
   await Promise.all(tasks);
 }
 
+const FAIL_ATTR = "data-fanyi-fail";
+const MAX_FAILS = 3;
+
+/** Bump per-element fail count; return true iff we should allow another retry. */
+function markFailure(el) {
+  const n = (parseInt(el.getAttribute(FAIL_ATTR) || "0", 10) || 0) + 1;
+  el.setAttribute(FAIL_ATTR, String(n));
+  return n < MAX_FAILS;
+}
+
 async function dispatch(group) {
   const ac = new AbortController();
   const key = Symbol();
@@ -101,15 +112,31 @@ async function dispatch(group) {
       signal: ac.signal,
     });
     console.info("[fanyi] batch ok: hits=%o latency=%dms upstream=%d", res.cache_hits, res.latency_ms, res.upstream_calls);
+    // Background fetch cannot be aborted; if the user disabled while we waited, drop silently.
+    if (!state.enabled) {
+      for (const u of group) clearLoading(u.el);
+      return;
+    }
     for (let i = 0; i < group.length; i++) {
+      const el = group[i].el;
       const tr = res.translations[i];
-      if (!group[i].el.isConnected) continue;
-      if (!tr) { clearLoading(group[i].el); continue; }
-      appendTranslation(group[i].el, tr);  // replaces loading wrapper in place
+      if (!el.isConnected) continue;
+      if (!tr) {
+        clearLoading(el);
+        // Allow future scans to re-queue this unit (bounded by MAX_FAILS so we don't loop on
+        // a block that genuinely can't be translated).
+        if (markFailure(el)) el.removeAttribute(MARK_ATTR);
+        continue;
+      }
+      el.removeAttribute(FAIL_ATTR);
+      appendTranslation(el, tr);
     }
   } catch (e) {
     if (e.name !== "AbortError") console.warn("[fanyi] batch failed (size=%d):", group.length, e);
-    for (const u of group) clearLoading(u.el);
+    for (const u of group) {
+      clearLoading(u.el);
+      if (u.el.isConnected && markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
+    }
   } finally {
     state.inflight.delete(key);
   }
