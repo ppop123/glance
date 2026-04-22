@@ -56,16 +56,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true; // async
 });
 
-chrome.commands.onCommand.addListener(async (cmd) => {
-  if (cmd !== "toggle-translate") return;
+async function toggleActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  if (!tab?.id || !/^https?:/.test(tab.url || "")) return;
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "fanyi:ensure-loaded" });
     await chrome.tabs.sendMessage(tab.id, { type: "fanyi:toggle" });
   } catch (e) {
     console.warn("[fanyi bg] cannot reach tab", tab.id, e);
   }
+}
+
+chrome.commands.onCommand.addListener((cmd) => {
+  if (cmd === "toggle-translate") toggleActiveTab();
+});
+
+// Right-click → "翻译此页（临时）". One-shot translation without touching autoSites.
+const CTX_MENU_ID = "fanyi-translate-page";
+function ensureContextMenu() {
+  // Recreate on every SW boot; ignore "already exists" errors.
+  chrome.contextMenus.create(
+    {
+      id: CTX_MENU_ID,
+      title: "翻译此页（临时）",
+      contexts: ["page", "selection", "link"],
+      documentUrlPatterns: ["http://*/*", "https://*/*"],
+    },
+    () => void chrome.runtime.lastError,  // swallow "duplicate id" on reload
+  );
+}
+chrome.runtime.onInstalled.addListener(ensureContextMenu);
+chrome.runtime.onStartup.addListener(ensureContextMenu);
+
+chrome.contextMenus.onClicked.addListener((info, _tab) => {
+  if (info.menuItemId === CTX_MENU_ID) toggleActiveTab();
 });
 
 chrome.runtime.onInstalled.addListener(async ({ reason }) => {

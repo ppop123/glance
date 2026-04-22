@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "基于本地 auth2api + 缓存的双语网页翻译。针对 x.com、github 做了适配优化，支持视频字幕生成。",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "permissions": ["storage", "activeTab", "scripting", "contextMenus"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": { "service_worker": "src/background.js", "type": "module" },
   "action": {
