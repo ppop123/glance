@@ -30,6 +30,20 @@ const SKIP_SELECTORS = [
   "[data-fanyi-skip]",
   // placeholders & toasts on many sites
   "[role='tooltip']",
+  // Navigation menus: sidebar items are short link labels packed into a narrow
+  // column. Translating them produces CJK that wraps mid-word, stacking each
+  // char on its own line (see Wikipedia Vector skin sidebar). Same story for
+  // language pickers, table-of-contents bars, etc. The main content is what
+  // matters; menu labels almost never are.
+  "nav",
+  "[role='navigation']",
+  ".sidebar",
+  ".navbox",
+  ".vector-menu",
+  ".vector-main-menu-landmark",
+  ".interlanguage-link",
+  ".interlanguage-link-target",
+  ".mw-portlet",
 ];
 
 export const MARK_ATTR = "data-fanyi-id";
