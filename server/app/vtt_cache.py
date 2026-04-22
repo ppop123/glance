@@ -21,12 +21,15 @@ from pathlib import Path
 
 # Hosts whose query string is pure tracking/UI noise — path alone is identity.
 _DROP_QUERY_HOSTS_RE = re.compile(
-    r"^https?://(www\.|m\.)?(x\.com|twitter\.com|youtu\.be|bilibili\.com|vimeo\.com|twitch\.tv|ted\.com|dailymotion\.com)(/|$)",
+    r"^https?://(www\.|m\.)?(x\.com|twitter\.com|youtu\.be|vimeo\.com|twitch\.tv|ted\.com|dailymotion\.com)(/|$)",
     re.I,
 )
-# YouTube needs special handling: `?v=<id>` IS the identity but `t=`, `si=`, etc. are noise.
+# YouTube: `?v=<id>` IS the identity but `t=`, `si=`, etc. are noise.
 _YOUTUBE_HOST_RE = re.compile(r"^https?://(www\.|m\.)?youtube\.com(/|$)", re.I)
 _YOUTUBE_V_RE = re.compile(r"[?&]v=([A-Za-z0-9_-]+)")
+# Bilibili: `?p=<n>` selects the part of a multipart video — identity-bearing.
+_BILIBILI_HOST_RE = re.compile(r"^https?://(www\.|m\.)?bilibili\.com(/|$)", re.I)
+_BILIBILI_P_RE = re.compile(r"[?&]p=(\d+)")
 
 
 # Normalize URLs so the same logical video hits the same cache entry regardless of
@@ -40,6 +43,10 @@ def canonical_url(url: str) -> str:
         m = _YOUTUBE_V_RE.search(u)
         base = re.sub(r"\?.*$", "", u).rstrip("/")
         return base + (f"?v={m.group(1)}" if m else "")
+    if _BILIBILI_HOST_RE.match(u):
+        m = _BILIBILI_P_RE.search(u)
+        base = re.sub(r"\?.*$", "", u).rstrip("/")
+        return base + (f"?p={m.group(1)}" if m else "")
     if _DROP_QUERY_HOSTS_RE.match(u):
         u = re.sub(r"\?.*$", "", u)
     # Unknown hosts: keep query — it may carry the video id.
