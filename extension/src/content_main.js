@@ -408,6 +408,7 @@ function fabToggleMenu() {
     <button data-act="toggle">${state.enabled ? "关闭翻译" : "翻译此页"}</button>
     <button data-act="auto">${isAuto ? "不再自动翻译本站" : "始终自动翻译本站"}</button>
     <button data-act="options">设置…</button>
+    <button data-act="hide" class="fanyi-fab-menu-sub">隐藏悬浮球（可在设置中重新开启）</button>
   `;
   fabMenuEl.style.display = "flex";
 }
@@ -429,11 +430,21 @@ async function fabOnMenuClick(ev) {
     if (next.includes(host) && !state.enabled) { await enable(); fabRender(); }
   }
   if (act === "options") { chrome.runtime.sendMessage({ type: "fanyi:open-options" }).catch(() => chrome.runtime.openOptionsPage?.()); }
+  if (act === "hide") {
+    await chrome.storage.sync.set({ showFab: false });
+    fabRemove();
+  }
+}
+
+function fabRemove() {
+  if (fabEl) { fabEl.remove(); fabEl = null; }
+  if (fabMenuEl) { fabMenuEl.remove(); fabMenuEl = null; }
 }
 
 function fabInstall() {
   if (window.top !== window) return;            // only top frame
   if (!/^https?:/.test(location.href)) return;  // not on chrome:// etc.
+  if (state.showFab === false) return;          // user hid it
   fabEnsure();
   // Close menu on outside click
   document.addEventListener("mousedown", (ev) => {
@@ -468,23 +479,26 @@ export async function boot() {
     });
   });
 
-  // Page-world postMessage bridge for toggle/enable/disable — useful from DevTools
-  // consoles and for automated browser tests.
+  // Page-world postMessage bridge for toggle/enable/disable + dev storage helpers.
   //   window.postMessage({ __fanyi: 'toggle' }, '*')
+  //   window.postMessage({ __fanyi: 'set', key: 'showFab', value: true }, '*')
   window.addEventListener("message", (ev) => {
     if (ev.source !== window) return;
-    const cmd = ev.data?.__fanyi;
+    const d = ev.data;
+    const cmd = d?.__fanyi;
     if (cmd === "toggle") toggle();
     else if (cmd === "enable") enable();
     else if (cmd === "disable") disable();
+    else if (cmd === "set" && typeof d.key === "string") chrome.storage.sync.set({ [d.key]: d.value });
   });
 
   // Load user prefs from storage.
-  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model", "glossary"]).catch(() => ({}));
+  const prefs = await chrome.storage.sync.get(["autoSites", "targetLang", "model", "glossary", "showFab"]).catch(() => ({}));
   const autoSites = Array.isArray(prefs.autoSites) && prefs.autoSites.length ? prefs.autoSites : DEFAULT_AUTO_SITES;
   state.target = prefs.targetLang || DEFAULT_TARGET;
   state.model  = prefs.model || null;
   state.glossary = Array.isArray(prefs.glossary) && prefs.glossary.length ? prefs.glossary : null;
+  state.showFab = prefs.showFab !== false;  // default on; user can hide via FAB menu
 
   // Re-read on the fly when user changes settings in popup.
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -492,6 +506,11 @@ export async function boot() {
     if (changes.targetLang) state.target = changes.targetLang.newValue || DEFAULT_TARGET;
     if (changes.model)      state.model  = changes.model.newValue || null;
     if (changes.glossary)   state.glossary = Array.isArray(changes.glossary.newValue) && changes.glossary.newValue.length ? changes.glossary.newValue : null;
+    if (changes.showFab) {
+      state.showFab = changes.showFab.newValue !== false;
+      if (state.showFab) fabInstall();
+      else fabRemove();
+    }
   });
 
   console.info("[fanyi] boot: adapter=%s site=%s target=%s model=%s auto=%o", state.adapter.name, state.site, state.target, state.model || "(default)", autoSites);
