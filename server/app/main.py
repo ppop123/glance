@@ -330,7 +330,10 @@ async def cache_invalidate(req: InvalidateReq):
 
 @app.get("/config")
 async def public_config():
-    """Non-sensitive config echoed to extension popup."""
+    """Non-sensitive config echoed to extension popup. Providers include BOTH
+    config.yaml entries and user-added ones from the persistent store (the
+    latter are what the user pastes via the options page)."""
+    providers = app.state.translator.all_providers() if app.state.translator else cfg.providers
     return {
         "default_model": cfg.defaults.model,
         "default_target": cfg.defaults.target_lang,
@@ -343,10 +346,10 @@ async def public_config():
                 "protocol": p.protocol,
                 "models": list(p.models),
                 "enabled": p.enabled,
-                # Don't leak api_key or full base_url path; extension just needs
-                # to know which provider:model strings are valid.
+                # api_key is never leaked; the extension only needs to know
+                # which provider:model strings are valid.
             }
-            for p in cfg.providers
+            for p in providers
             if p.enabled
         ],
     }
