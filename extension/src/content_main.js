@@ -141,6 +141,7 @@ const PILL_DONE_LINGER_MS = 1200;
 
 let pillTotal = 0;
 let pillDone = 0;
+let pillFailed = 0;   // how many of pillDone were failures (for the render)
 let pillEl = null;
 let pillShowTimer = null;
 let pillHideTimer = null;
@@ -163,26 +164,36 @@ function pillEnsure() {
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
 }
 
-let pillRenderRaf = 0;
 function pillRender() {
-  // Coalesce many advance() calls in a single animation frame — at 30 items/batch
-  // fanning out, we can otherwise mutate text content dozens of times per tick.
-  if (pillRenderRaf) return;
-  pillRenderRaf = requestAnimationFrame(() => {
-    pillRenderRaf = 0;
-    if (!pillEl) return;
-    const txt = pillEl.querySelector(".fanyi-progress-text");
-    const remaining = pillTotal - pillDone;
-    if (pillTotal > 0 && remaining <= 0) {
-      pillEl.classList.add("fanyi-progress-done");
+  // Direct DOM write — no requestAnimationFrame. RAF gets heavily throttled
+  // in background / inactive tabs, and a pill that silently fails to show
+  // "翻译失败 N" because the user happened to be on another tab is exactly
+  // the bug we're trying not to ship. Text content updates are cheap;
+  // browsers coalesce paints themselves.
+  if (!pillEl) return;
+  const txt = pillEl.querySelector(".fanyi-progress-text");
+  if (!txt) return;
+  const remaining = pillTotal - pillDone;
+  const ok = pillDone - pillFailed;
+  const failSuffix = pillFailed > 0 ? ` · 失败 ${pillFailed}` : "";
+  pillEl.classList.toggle("fanyi-progress-err", pillFailed > 0);
+  if (pillTotal > 0 && remaining <= 0) {
+    pillEl.classList.add("fanyi-progress-done");
+    if (pillFailed > 0 && ok === 0) {
+      pillEl.title = "翻译失败 · 点击关闭 · 检查 API Key / 服务商可用性";
+      txt.textContent = `翻译失败 ${pillFailed}`;
+    } else if (pillFailed > 0) {
+      pillEl.title = "部分失败 · 点击关闭";
+      txt.textContent = `已完成 ${ok}${failSuffix}`;
+    } else {
       pillEl.title = "翻译完成";
       txt.textContent = `已完成 ${pillTotal}`;
-    } else {
-      pillEl.classList.remove("fanyi-progress-done");
-      pillEl.title = "点击取消翻译";
-      txt.textContent = `翻译中 ${pillDone}/${pillTotal}`;
     }
-  });
+  } else {
+    pillEl.classList.remove("fanyi-progress-done");
+    pillEl.title = "点击取消翻译";
+    txt.textContent = `翻译中 ${pillDone}/${pillTotal}${failSuffix}`;
+  }
 }
 
 function pillAdd(n) {
@@ -200,19 +211,30 @@ function pillAdd(n) {
   }, PILL_SHOW_DELAY_MS);
 }
 
-function pillAdvance(n) {
+function pillAdvance(n, failed = 0) {
   if (n <= 0) return;
   pillDone += n;
+  if (failed > 0) pillFailed += failed;
+  // Force the pill to reveal if it was still in the lazy-delay window — a
+  // silent "done" with failures is the exact bug we're fixing.
+  if (failed > 0 && !pillEl && pillShowTimer) {
+    clearTimeout(pillShowTimer);
+    pillShowTimer = null;
+    pillEnsure();
+  }
   if (pillEl) pillRender();
   if (pillDone >= pillTotal) {
     if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
     if (pillEl) {
       if (pillHideTimer) clearTimeout(pillHideTimer);
-      pillHideTimer = setTimeout(pillReset, PILL_DONE_LINGER_MS);
+      // Keep failure state on screen longer so the user actually notices.
+      const linger = pillFailed > 0 ? PILL_DONE_LINGER_MS * 4 : PILL_DONE_LINGER_MS;
+      pillHideTimer = setTimeout(pillReset, linger);
     } else {
       // Quietly reset counters — nothing was ever shown.
       pillTotal = 0;
       pillDone = 0;
+      pillFailed = 0;
     }
   }
 }
@@ -220,6 +242,7 @@ function pillAdvance(n) {
 function pillReset() {
   pillTotal = 0;
   pillDone = 0;
+  pillFailed = 0;
   if (pillEl) { pillEl.remove(); pillEl = null; }
   if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
@@ -317,10 +340,12 @@ async function translateUnits(units) {
         onChunk: (data) => {
           if (!state.enabled || !data?.items) return;
           let n = 0;
+          let nFailed = 0;
           for (const it of data.items) {
             const els = fanout.get(it.i) || [];
             for (const u of els) {
               n++;
+              if (it.failed) nFailed++;
               if (!u.el.isConnected) continue;
               if (it.failed) {
                 if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
@@ -337,7 +362,7 @@ async function translateUnits(units) {
             }
           }
           applied += n;
-          pillAdvance(n);
+          pillAdvance(n, nFailed);
         },
       }
     );
@@ -351,7 +376,13 @@ async function translateUnits(units) {
     }
   } finally {
     state.inflight.delete(key);
-    if (applied < fresh.length) pillAdvance(fresh.length - applied);
+    if (applied < fresh.length) {
+      // Everything that didn't surface in onChunk was a stream-level failure
+      // (network cut, provider 500 with no per-item rows, etc.). Count them
+      // as failures in the pill so the user doesn't see a silent "done".
+      const missing = fresh.length - applied;
+      pillAdvance(missing, missing);
+    }
   }
 }
 
