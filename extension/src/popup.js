@@ -32,10 +32,39 @@ function renderToggle(on, { ready = true } = {}) {
 
 /* ── tab status / toggle ─────────────────────────────────────────── */
 
+/** PDF URLs: arxiv /pdf/<id>, plain /foo.pdf, data-URI/blob: excluded.
+ * Chrome's built-in PDF viewer sits inside a <embed> that content scripts
+ * can't reach — the popup-triggered redirect to our own bilingual viewer is
+ * the only way to translate these. */
+function isPdfTab(tab) {
+  const u = tab?.url || "";
+  if (!/^https?:\/\//.test(u)) return false;
+  try {
+    const parsed = new URL(u);
+    const path = parsed.pathname.toLowerCase();
+    if (path.endsWith(".pdf")) return true;
+    // arxiv.org/pdf/<id> (no extension) → .pdf path segment
+    if (parsed.hostname.endsWith("arxiv.org") && path.startsWith("/pdf/")) return true;
+    return false;
+  } catch { return false; }
+}
+
+async function getServerUrlSync() {
+  const { serverUrl = DEFAULT_URL } = await chrome.storage.sync.get({ serverUrl: DEFAULT_URL });
+  return (serverUrl || DEFAULT_URL).replace(/\/$/, "");
+}
+
 async function refreshStatus() {
   const tab = await currentTab();
   const host = hostOf(tab?.url || "");
   $("#host").textContent = host || "—";
+
+  const banner = $("#pdf-banner");
+  if (banner) {
+    const isPdf = isPdfTab(tab);
+    banner.hidden = !isPdf;
+    if (isPdf) banner.dataset.pdfUrl = tab.url;
+  }
 
   if (!tab?.id || !/^https?:/.test(tab.url || "")) {
     renderToggle(false, { ready: false });
@@ -142,6 +171,19 @@ $("#dev-reload").addEventListener("click", async () => {
 });
 
 $("#open-options").addEventListener("click", () => chrome.runtime.openOptionsPage?.());
+
+$("#pdf-open").addEventListener("click", async () => {
+  const banner = $("#pdf-banner");
+  const pdfUrl = banner?.dataset.pdfUrl;
+  if (!pdfUrl) return;
+  const base = await getServerUrlSync();
+  const { targetLang = "zh-CN", model } = await chrome.storage.sync.get({ targetLang: "zh-CN", model: null });
+  const params = new URLSearchParams({ src: pdfUrl, target: targetLang });
+  if (model) params.set("model", model);
+  const viewerUrl = `${base}/pdf/view?${params.toString()}`;
+  chrome.tabs.create({ url: viewerUrl });
+  window.close();
+});
 $("#open-options-top")?.addEventListener("click", () => chrome.runtime.openOptionsPage?.());
 
 // Advanced disclosure: reveals the server URL input.
