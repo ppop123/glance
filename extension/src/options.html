@@ -100,58 +100,623 @@
       <div id="providerStats" class="prov-stats"><em class="hint">加载中…</em></div>
     </section>
 
-    <section class="card">
-      <h2>LLM 服务商</h2>
-      <p class="hint">选一个模板，贴 API key，保存即可用。密钥存在本地（<code>~/.fanyi-ext/user_providers.json</code>），不会进 config.yaml 或 git。</p>
+<!-- BEGIN llm-card (designed via Claude Design, drop-in fragment) -->
+    <!-- #include: see Downloads/card.html for source. Inline to keep options.html self-contained. -->
+    <style>
+      .llm-card {
+        /* ---- tokens ---- */
+        --brand: #2d8cf0;
+        --brand-weak: rgba(45, 140, 240, 0.10);
+        --brand-strong: #1f74d1;
 
-      <div class="row">
-        <label for="providerTemplate">添加</label>
-        <select id="providerTemplate">
-          <option value="">— 选择服务商 —</option>
-        </select>
+        --bg: #f6f8fa;
+        --surface: #ffffff;
+        --surface-sunken: #f6f8fa;
+        --border: #d0d7de;
+        --border-strong: #afb8c1;
+        --text: #1f2328;
+        --muted: #656d76;
+
+        --success: #1a7f37;
+        --success-bg: rgba(26, 127, 55, 0.10);
+        --danger: #cf222e;
+        --danger-bg: rgba(207, 34, 46, 0.10);
+
+        --radius-card: 10px;
+        --radius-input: 6px;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+
+        --font: -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, "Segoe UI", Roboto, sans-serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        .llm-card {
+          --bg: #0d1117;
+          --surface: #161b22;
+          --surface-sunken: #0d1117;
+          --border: #30363d;
+          --border-strong: #484f58;
+          --text: #e6edf3;
+          --muted: #8b949e;
+          --brand-weak: rgba(45, 140, 240, 0.18);
+          --success: #3fb950;
+          --success-bg: rgba(63, 185, 80, 0.15);
+          --danger: #f85149;
+          --danger-bg: rgba(248, 81, 73, 0.15);
+          --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+        }
+      }
+
+      /* ---------- header ---------- */
+      .llm-card__head {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .llm-card__title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .llm-card__subtitle {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      /* ---------- section scaffolding ---------- */
+      .llm-card__section {
+        padding: 20px;
+      }
+      .llm-card__section + .llm-card__section {
+        border-top: 1px solid var(--border);
+      }
+      .llm-card__section-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+
+      /* ---------- form rows ---------- */
+      .llm-row {
+        display: grid;
+        grid-template-columns: 88px 1fr;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .llm-row--top { align-items: start; }
+      .llm-row--top > label { padding-top: 7px; }
+      .llm-row > label {
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .llm-field {
+        position: relative;
+        display: flex;
+        align-items: stretch;
+      }
+      .llm-input,
+      .llm-textarea,
+      .llm-select {
+        width: 100%;
+        box-sizing: border-box;
+        font-family: var(--font);
+        font-size: 13px;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-input);
+        padding: 6px 10px;
+        line-height: 20px;
+        transition: border-color 120ms, box-shadow 120ms;
+        outline: none;
+      }
+      .llm-input:hover,
+      .llm-textarea:hover,
+      .llm-select:hover { border-color: var(--border-strong); }
+      .llm-input:focus,
+      .llm-textarea:focus,
+      .llm-select:focus {
+        border-color: var(--brand);
+        box-shadow: 0 0 0 3px var(--brand-weak);
+      }
+      .llm-input--mono { font-family: var(--mono); font-size: 12.5px; }
+      .llm-textarea {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        resize: vertical;
+        min-height: 68px;
+        line-height: 1.55;
+      }
+      .llm-field--with-addon .llm-input { padding-right: 32px; }
+      .llm-field__addon {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: transparent;
+        border: 0;
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        color: var(--muted);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+      .llm-field__addon:hover { background: var(--surface-sunken); color: var(--text); }
+      .llm-field__addon svg { width: 15px; height: 15px; display: block; }
+
+      .llm-helper {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .llm-field-helper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .llm-field-helper .llm-input { flex: 1; }
+      .llm-field-helper .llm-helper { white-space: nowrap; }
+
+      /* ---------- select ---------- */
+      .llm-select {
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='none' stroke='%23656d76' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5L6 7.5L9 4.5'/></svg>");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 28px;
+        cursor: pointer;
+      }
+      @media (prefers-color-scheme: dark) {
+        .llm-select {
+          background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='none' stroke='%238b949e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5L6 7.5L9 4.5'/></svg>");
+        }
+      }
+
+      /* ---------- slide-down reveal ---------- */
+      .llm-reveal {
+        display: grid;
+        grid-template-rows: 0fr;
+        transition: grid-template-rows 260ms ease, opacity 200ms ease, margin 260ms ease, padding 260ms ease, border-color 260ms ease;
+        opacity: 0;
+        overflow: hidden;
+        border-top: 1px solid transparent;
+      }
+      .llm-reveal > .llm-reveal__inner {
+        min-height: 0;
+        overflow: hidden;
+      }
+      .llm-reveal.is-open {
+        grid-template-rows: 1fr;
+        opacity: 1;
+        border-top-color: var(--border);
+      }
+      .llm-reveal.is-open > .llm-reveal__inner {
+        overflow: visible;
+      }
+
+      /* ---------- models sub-row ---------- */
+      .llm-models-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 6px;
+      }
+
+      /* ---------- fetch status / result line ---------- */
+      .llm-status {
+        font-size: 12px;
+        color: var(--muted);
+        min-height: 18px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .llm-status--ok { color: var(--success); }
+      .llm-status--err { color: var(--danger); }
+
+      .llm-result {
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: var(--radius-input);
+        min-height: 16px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .llm-result:empty { display: none; }
+      .llm-result--ok  { background: var(--success-bg); color: var(--success); }
+      .llm-result--err { background: var(--danger-bg);  color: var(--danger); }
+
+      /* ---------- micro-row under fields ---------- */
+      .llm-microrow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 14px 0 16px;
+        padding-top: 12px;
+        border-top: 1px dashed var(--border);
+        min-height: 28px;
+      }
+      .llm-doclink {
+        font-size: 12px;
+        color: var(--brand);
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+      }
+      .llm-doclink:hover { text-decoration: underline; }
+
+      /* ---------- buttons ---------- */
+      .llm-actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 8px;
+      }
+      .llm-btn {
+        appearance: none;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 20px;
+        padding: 5px 14px;
+        border-radius: var(--radius-input);
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition: background 120ms, border-color 120ms, color 120ms, box-shadow 120ms;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      .llm-btn:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px var(--brand-weak);
+      }
+      .llm-btn--primary {
+        background: var(--brand);
+        color: #fff;
+        border-color: var(--brand);
+      }
+      .llm-btn--primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
+      .llm-btn--outline {
+        background: var(--surface);
+        color: var(--text);
+        border-color: var(--border);
+      }
+      .llm-btn--outline:hover { background: var(--surface-sunken); border-color: var(--border-strong); }
+      .llm-btn--text {
+        background: transparent;
+        color: var(--muted);
+        padding: 5px 8px;
+      }
+      .llm-btn--text:hover { color: var(--text); background: var(--surface-sunken); }
+      .llm-btn--small {
+        font-size: 12px;
+        padding: 3px 10px;
+        line-height: 18px;
+      }
+
+      /* ---------- provider list ---------- */
+      .llm-list-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .llm-list-head__title {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text);
+      }
+      .llm-list-head__count {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .llm-list {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-input);
+        overflow: hidden;
+        background: var(--surface);
+      }
+      .llm-list:empty::before {
+        content: "还没有配置的服务商";
+        display: block;
+        padding: 24px;
+        text-align: center;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .llm-provider {
+        display: grid;
+        grid-template-columns: 32px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 10px 12px;
+      }
+      .llm-provider + .llm-provider {
+        border-top: 1px solid var(--border);
+      }
+      .llm-provider__avatar {
+        width: 32px; height: 32px;
+        border-radius: 9999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        font-weight: 600;
+        font-family: var(--font);
+        user-select: none;
+      }
+      @media (prefers-color-scheme: dark) {
+        .llm-provider__avatar { filter: brightness(0.92); }
+      }
+      .llm-provider__body { min-width: 0; }
+      .llm-provider__line1 {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+      .llm-provider__name {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .llm-provider__line2 {
+        font-size: 12px;
+        color: var(--muted);
+        font-family: var(--mono);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-top: 1px;
+      }
+      .llm-provider__line2 .sep { font-family: var(--font); }
+
+      .llm-chip {
+        font-size: 11px;
+        line-height: 16px;
+        padding: 1px 8px;
+        border-radius: 9999px;
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+      .llm-chip--config {
+        color: var(--muted);
+        border: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .llm-chip--user {
+        color: #fff;
+        background: var(--brand);
+        border: 1px solid var(--brand);
+      }
+      .llm-chip svg { width: 10px; height: 10px; }
+
+      /* ---------- overflow menu ---------- */
+      .llm-provider__right { position: relative; display: flex; align-items: center; }
+      .llm-menu-btn {
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--muted);
+        width: 28px; height: 28px;
+        border-radius: var(--radius-input);
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .llm-menu-btn:hover { background: var(--surface-sunken); color: var(--text); border-color: var(--border); }
+      .llm-menu-hint {
+        font-size: 11px;
+        color: var(--muted);
+        padding-right: 4px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .llm-menu-hint svg { width: 11px; height: 11px; }
+
+      .llm-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        min-width: 140px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-input);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+        padding: 4px;
+        z-index: 20;
+        display: none;
+      }
+      .llm-menu.is-open { display: block; }
+      .llm-menu__item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        background: transparent;
+        border: 0;
+        text-align: left;
+        font-family: inherit;
+        font-size: 13px;
+        color: var(--text);
+        padding: 6px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .llm-menu__item:hover { background: var(--surface-sunken); }
+      .llm-menu__item--danger { color: var(--danger); }
+      .llm-menu__item--danger:hover { background: var(--danger-bg); }
+
+      /* ---------- optgroup polish ---------- */
+      .llm-select optgroup { font-style: normal; font-weight: 600; color: var(--muted); }
+      .llm-select option { color: var(--text); background: var(--surface); font-weight: 400; }
+    </style>
+
+    <section class="llm-card" aria-labelledby="llm-card-title">
+      <header class="llm-card__head">
+        <div>
+          <h2 id="llm-card-title" class="llm-card__title">LLM 服务商</h2>
+          <p class="llm-card__subtitle">配置翻译使用的大模型服务。密钥仅保存在本地。</p>
+        </div>
+      </header>
+
+      <!-- ================= SECTION A · 添加 ================= -->
+      <div class="llm-card__section">
+        <label for="providerTemplate" class="llm-card__section-label">添加</label>
+        <div class="llm-row">
+          <label for="providerTemplate">添加</label>
+          <div class="llm-field">
+            <select id="providerTemplate" class="llm-select" aria-label="选择服务商模板">
+              <option value="">— 选择服务商 —</option>
+              <optgroup label="免费或有免费层">
+                <option value="groq">Groq</option>
+                <option value="glm">GLM (智谱)</option>
+                <option value="gemini">Gemini</option>
+                <option value="mistral">Mistral</option>
+              </optgroup>
+              <optgroup label="付费">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="deepseek">DeepSeek</option>
+              </optgroup>
+              <optgroup label="自定义">
+                <option value="ollama">Ollama (本地)</option>
+                <option value="openai-compat">OpenAI 兼容端点</option>
+                <option value="custom">自定义…</option>
+              </optgroup>
+            </select>
+          </div>
+        </div>
       </div>
 
-      <div id="providerForm" class="prov-form" hidden>
-        <div class="row">
-          <label for="pfLabel">显示名</label>
-          <input id="pfLabel" type="text" placeholder="DeepSeek" style="flex:1">
-        </div>
-        <div class="row">
-          <label for="pfName">名称</label>
-          <input id="pfName" type="text" placeholder="deepseek" style="flex:1">
-          <span class="hint" style="margin:0 0 0 8px">model 前缀用</span>
-        </div>
-        <div class="row">
-          <label for="pfApiKey">API Key</label>
-          <input id="pfApiKey" type="password" placeholder="sk-..." style="flex:1">
-          <button type="button" id="pfToggleKey" class="btn-mini">显示</button>
-        </div>
-        <div class="row">
-          <label for="pfBaseUrl">端点</label>
-          <input id="pfBaseUrl" type="text" placeholder="https://api.example.com/v1" style="flex:1">
-        </div>
-        <div class="row" style="align-items:flex-start">
-          <label for="pfModels">模型列表</label>
-          <div style="flex:1; display:flex; flex-direction:column; gap:4px">
-            <textarea id="pfModels" rows="3" placeholder="一行一个模型 id"></textarea>
-            <div style="display:flex; gap:8px; align-items:center">
-              <button type="button" id="pfFetchModels" class="btn-mini">从服务商拉取</button>
-              <span id="pfFetchResult" class="hint" style="flex:1"></span>
+      <!-- ================= SECTION B · form (hidden by default) ================= -->
+      <div id="providerForm" class="llm-reveal" aria-hidden="true">
+        <div class="llm-reveal__inner">
+          <div class="llm-card__section">
+            <span class="llm-card__section-label">编辑服务商</span>
+
+            <div class="llm-row">
+              <label for="pfLabel">显示名</label>
+              <div class="llm-field">
+                <input id="pfLabel" class="llm-input" type="text" placeholder="例如：Groq – Llama 3.1">
+              </div>
+            </div>
+
+            <div class="llm-row">
+              <label for="pfName">名称</label>
+              <div class="llm-field llm-field-helper">
+                <input id="pfName" class="llm-input llm-input--mono" type="text" placeholder="groq">
+                <span class="llm-helper">model 前缀用</span>
+              </div>
+            </div>
+
+            <div class="llm-row">
+              <label for="pfApiKey">API Key</label>
+              <div class="llm-field llm-field--with-addon">
+                <input id="pfApiKey" class="llm-input llm-input--mono" type="password" autocomplete="off" placeholder="sk-…">
+                <button id="pfToggleKey" class="llm-field__addon" type="button" aria-label="显示 / 隐藏">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1.5 8S3.5 3.5 8 3.5 14.5 8 14.5 8 12.5 12.5 8 12.5 1.5 8 1.5 8Z"/>
+                    <circle cx="8" cy="8" r="2.2"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="llm-row">
+              <label for="pfBaseUrl">端点</label>
+              <div class="llm-field">
+                <input id="pfBaseUrl" class="llm-input llm-input--mono" type="url" placeholder="https://api.groq.com/openai/v1">
+              </div>
+            </div>
+
+            <div class="llm-row llm-row--top">
+              <label for="pfModels">模型列表</label>
+              <div>
+                <div class="llm-field">
+                  <textarea id="pfModels" class="llm-textarea" rows="3" spellcheck="false" placeholder="每行一个模型 id，例如&#10;llama-3.1-70b-versatile&#10;llama-3.1-8b-instant"></textarea>
+                </div>
+                <div class="llm-models-bar">
+                  <button id="pfFetchModels" class="llm-btn llm-btn--outline llm-btn--small" type="button">从服务商拉取</button>
+                  <span id="pfFetchResult" class="llm-status" aria-live="polite"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="llm-microrow">
+              <a id="pfDocLink" class="llm-doclink" href="#" target="_blank" rel="noopener">
+                获取 API Key
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3.5 1.5h5v5"/><path d="M8.5 1.5L3 7"/><path d="M6.5 8.5h-5v-5"/>
+                </svg>
+              </a>
+              <span id="pfResult" class="llm-result" aria-live="polite"></span>
+            </div>
+
+            <div class="llm-actions">
+              <button id="pfCancel" class="llm-btn llm-btn--text" type="button">取消</button>
+              <button id="pfTest"   class="llm-btn llm-btn--outline" type="button">测试连接</button>
+              <button id="pfSave"   class="llm-btn llm-btn--primary" type="button">保存</button>
             </div>
           </div>
         </div>
-        <div class="row">
-          <a id="pfDocLink" class="hint" href="#" target="_blank" rel="noopener" hidden>获取 API Key ↗</a>
-          <span id="pfResult" class="hint" style="margin-left:auto"></span>
-        </div>
-        <div class="row">
-          <button type="button" id="pfTest" class="btn">测试连接</button>
-          <button type="button" id="pfSave" class="btn primary">保存</button>
-          <button type="button" id="pfCancel" class="btn">取消</button>
-        </div>
       </div>
 
-      <div id="providerList" class="prov-list" style="margin-top:12px"></div>
+      <!-- ================= SECTION C · list ================= -->
+      <div class="llm-card__section">
+        <div class="llm-list-head">
+          <h3 class="llm-list-head__title">已配置</h3>
+          <span class="llm-list-head__count" id="providerCount"></span>
+        </div>
+        <div id="providerList" class="llm-list"></div>
+      </div>
     </section>
 
     <section class="card">

@@ -199,46 +199,47 @@ function populateProviderTemplateDropdown() {
   }
 }
 
+/** Form reveal is controlled by aria-hidden (the new design's CSS uses
+ *  .llm-reveal[aria-hidden=false] for the slide-down). */
+function showForm() { $("#providerForm").setAttribute("aria-hidden", "false"); }
+function hideForm() { $("#providerForm").setAttribute("aria-hidden", "true"); }
+
 function openProviderForm(template) {
-  const form = $("#providerForm");
   $("#pfLabel").value = template.label;
   $("#pfName").value = template.id === "custom" ? "" : template.id;
   $("#pfName").disabled = false;
   $("#pfApiKey").value = "";
   $("#pfApiKey").type = "password";
-  $("#pfToggleKey").textContent = "显示";
   $("#pfBaseUrl").value = template.base_url;
   $("#pfModels").value = (template.models || []).join("\n");
   const link = $("#pfDocLink");
-  if (template.docUrl) { link.href = template.docUrl; link.textContent = "获取 API Key ↗"; link.hidden = false; }
+  if (template.docUrl) { link.href = template.docUrl; link.hidden = false; }
   else link.hidden = true;
   $("#pfResult").textContent = "";
   $("#pfFetchResult").textContent = "";
-  form.dataset.editing = "";
-  form.hidden = false;
+  $("#providerForm").dataset.editing = "";
+  showForm();
 }
 
 function openProviderFormForEdit(provider) {
-  const form = $("#providerForm");
   $("#pfLabel").value = provider.label || provider.name;
   $("#pfName").value = provider.name;
-  $("#pfName").disabled = true;  // name is the key, can't rename without delete+re-add
-  $("#pfApiKey").value = "";     // not returned by server; user re-enters only if changing
+  $("#pfName").disabled = true;
+  $("#pfApiKey").value = "";
   $("#pfApiKey").placeholder = provider.has_api_key ? "（已设置，不动则保留）" : "sk-...";
   $("#pfApiKey").type = "password";
-  $("#pfToggleKey").textContent = "显示";
   $("#pfBaseUrl").value = provider.base_url;
   $("#pfModels").value = (provider.models || []).join("\n");
   $("#pfDocLink").hidden = true;
   $("#pfResult").textContent = "";
   $("#pfFetchResult").textContent = "";
-  form.dataset.editing = provider.name;
-  form.hidden = false;
-  form.scrollIntoView({ behavior: "smooth", block: "center" });
+  $("#providerForm").dataset.editing = provider.name;
+  showForm();
+  $("#providerForm").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function closeProviderForm() {
-  $("#providerForm").hidden = true;
+  hideForm();
   $("#providerTemplate").value = "";
   $("#pfName").disabled = false;
 }
@@ -255,6 +256,21 @@ function readProviderForm() {
   };
 }
 
+/** Stable pastel color for the provider avatar, derived from the name's hash
+ *  so the same provider always gets the same color across reloads. */
+function pastelFor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue} 60% 88%)`;
+}
+function pastelTextFor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  const hue = Math.abs(h) % 360;
+  return `hsl(${hue} 60% 28%)`;
+}
+
 async function refreshProviderList() {
   const host = $("#providerList");
   if (!host) return;
@@ -262,45 +278,67 @@ async function refreshProviderList() {
     const r = await serverFetch("/providers");
     const j = await r.json();
     const rows = j.providers || [];
-    if (!rows.length) {
-      host.innerHTML = `<em class="hint">还没有服务商，选一个添加。</em>`;
-      return;
-    }
-    host.innerHTML = rows.map(p => `
-      <div class="prov-row" data-name="${escHtml(p.name)}">
-        <div class="prov-row-main">
-          <span class="prov-row-title">${escHtml(p.label)}</span>
-          <span class="prov-row-src ${p.source === "config" ? "src-config" : "src-user"}">${
-            p.source === "config" ? "config.yaml" : "用户添加"
-          }</span>
-          ${p.has_api_key ? '<span class="prov-row-src">🔑</span>' : ''}
-        </div>
-        <div class="prov-row-sub">
-          <code>${escHtml(p.base_url)}</code>
-          · ${p.models.length} 个模型
-        </div>
-        <div class="prov-row-actions">
-          ${p.source === "user" ? `
-            <button type="button" class="btn-mini" data-act="edit">编辑</button>
-            <button type="button" class="btn-mini danger" data-act="delete">删除</button>
-          ` : `<span class="hint">config.yaml 管理</span>`}
-        </div>
-      </div>
-    `).join("");
-    host.querySelectorAll(".prov-row").forEach(row => {
-      row.addEventListener("click", async (ev) => {
-        const b = ev.target.closest("button");
-        if (!b) return;
-        const name = row.dataset.name;
-        const provider = rows.find(x => x.name === name);
-        if (b.dataset.act === "edit" && provider) openProviderFormForEdit(provider);
-        else if (b.dataset.act === "delete" && provider) {
-          if (!confirm(`删除服务商 "${provider.label}"？`)) return;
-          await serverFetch(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
-          await refreshProviderList();
-        }
-      });
+    const count = $("#providerCount");
+    if (count) count.textContent = rows.length ? `${rows.length} 个` : "";
+    if (!rows.length) { host.innerHTML = ""; return; }
+    host.innerHTML = rows.map(p => {
+      const first = (p.label || p.name || "?").trim().slice(0, 1).toUpperCase();
+      const chip = p.source === "config"
+        ? `<span class="llm-chip llm-chip--config"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="4.5" width="6" height="4" rx="1"/><path d="M3.5 4.5V3a1.5 1.5 0 1 1 3 0v1.5"/></svg>config.yaml</span>`
+        : `<span class="llm-chip llm-chip--user">用户添加</span>`;
+      const rightCol = p.source === "user"
+        ? `<div class="llm-provider__right">
+             <button type="button" class="llm-menu-btn" aria-label="更多" data-menu>⋯</button>
+             <div class="llm-menu" data-menu-list>
+               <button type="button" class="llm-menu__item" data-act="edit">编辑</button>
+               <button type="button" class="llm-menu__item llm-menu__item--danger" data-act="delete">删除</button>
+             </div>
+           </div>`
+        : `<span class="llm-menu-hint">config.yaml 管理</span>`;
+      return `
+        <div class="llm-provider" data-name="${escHtml(p.name)}">
+          <span class="llm-provider__avatar" style="background:${pastelFor(p.name)};color:${pastelTextFor(p.name)}">${escHtml(first)}</span>
+          <div class="llm-provider__body">
+            <div class="llm-provider__line1">
+              <span class="llm-provider__name">${escHtml(p.label)}</span>
+              ${chip}
+            </div>
+            <div class="llm-provider__line2">${escHtml(p.base_url)} <span class="sep">·</span> ${p.models.length} 个模型</div>
+          </div>
+          ${rightCol}
+        </div>`;
+    }).join("");
+    // Wire the ⋯ overflow menus
+    host.querySelectorAll(".llm-provider").forEach(row => {
+      const menuBtn = row.querySelector("[data-menu]");
+      const menu = row.querySelector("[data-menu-list]");
+      if (menuBtn && menu) {
+        menuBtn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          // Close any other open menu first
+          host.querySelectorAll(".llm-menu.is-open").forEach(m => { if (m !== menu) m.classList.remove("is-open"); });
+          menu.classList.toggle("is-open");
+        });
+        menu.addEventListener("click", async (ev) => {
+          const b = ev.target.closest("button[data-act]");
+          if (!b) return;
+          ev.stopPropagation();
+          menu.classList.remove("is-open");
+          const name = row.dataset.name;
+          const provider = rows.find(x => x.name === name);
+          if (b.dataset.act === "edit" && provider) openProviderFormForEdit(provider);
+          else if (b.dataset.act === "delete" && provider) {
+            if (!confirm(`删除服务商 "${provider.label}"？`)) return;
+            await serverFetch(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+            await refreshProviderList();
+          }
+        });
+      }
     });
+    // Click-anywhere-else closes any open menu
+    document.addEventListener("click", () => {
+      host.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
+    }, { once: true });
   } catch (e) {
     host.innerHTML = `<em class="hint">加载失败：${escHtml(String(e?.message || e))}</em>`;
   }
@@ -319,7 +357,9 @@ function wireProviderForm() {
     const input = $("#pfApiKey");
     const showing = input.type === "text";
     input.type = showing ? "password" : "text";
-    $("#pfToggleKey").textContent = showing ? "显示" : "隐藏";
+    $("#pfToggleKey").setAttribute("aria-label", showing ? "显示" : "隐藏");
+    // Toggle a class in case the design uses :has() or similar to swap icon state
+    $("#pfToggleKey").classList.toggle("is-showing", !showing);
   });
   $("#pfFetchModels").addEventListener("click", async () => {
     const base_url = $("#pfBaseUrl").value.trim();
