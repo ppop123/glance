@@ -1,234 +1,422 @@
-/* Scoped under [data-fanyi-state] so removal of the attr instantly hides all output. */
+/* ============================================================
+   glance — in-page overlay styles
+   Drop-in CSS. All rules are defensive against host page CSS:
+   - fixed/absolute positioning with !important
+   - z-index 2147483645+
+   - own font stack, box-sizing, line-height
+   - no inherited color/background from host
+   ============================================================ */
 
 :root {
-  --fanyi-accent: #2d8cf0;
-  --fanyi-text:   inherit;
-}
-@media (prefers-color-scheme: dark) {
-  :root { --fanyi-accent: #6db3ff; }
-}
-
-.fanyi-translation {
-  display: block;
-  margin: 4px 0 0 0;
-  padding: 0;
-  color: var(--fanyi-text);
-  font-family: var(--fanyi-font, inherit);
-  font-feature-settings: normal;
-  line-height: 1.5;
-  user-select: text;
-  /* Inherit the source block's line-break semantics so Chinese flows naturally on
-     normal-wrap paragraphs (wiki/docs) while still preserving intentional \n in
-     pre-wrap contexts (tweets, user comments, code blocks). */
-  white-space: inherit;
-  word-break: break-word;
+  --fanyi-glass: rgba(22, 28, 36, 0.92);
+  --fanyi-glass-strong: rgba(28, 34, 42, 0.96);
+  --fanyi-stroke: rgba(255, 255, 255, 0.06);
+  --fanyi-stroke-strong: rgba(255, 255, 255, 0.1);
+  --fanyi-text: #e8ecf1;
+  --fanyi-text-dim: #9aa4b2;
+  --fanyi-blue: #2d8cf0;
+  --fanyi-blue-soft: rgba(45, 140, 240, 0.16);
+  --fanyi-green: #3ecf8e;
+  --fanyi-warn: #e6963c;
+  --fanyi-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --fanyi-font: -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-/* Tight spacing inside narrow table cells. */
-td > .fanyi-translation,
-th > .fanyi-translation {
-  margin: 1px 0 0 0;
-  font-size: 0.92em;
-  line-height: 1.35;
+/* Common reset for every overlay we render.
+   We are fighting host CSS, so we re-declare the basics. */
+.fanyi-progress,
+.fanyi-fab,
+.fanyi-fab-menu,
+.fanyi-sel-btn,
+.fanyi-sel-pop,
+.fanyi-failed-msg {
+  box-sizing: border-box !important;
+  font-family: var(--fanyi-font) !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  font-variant: normal !important;
+  letter-spacing: 0 !important;
+  line-height: 1.4 !important;
+  text-align: left !important;
+  text-transform: none !important;
+  text-decoration: none !important;
+  text-shadow: none !important;
+  color: var(--fanyi-text) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
 }
 
-/* Permanent-failure marker — the only place a subtle marker still makes sense,
-   since the user needs to distinguish "translation present" from "gave up". */
-.fanyi-translation.fanyi-failed {
-  color: rgba(230, 150, 60, 0.95);
-  font-size: 0.82em;
-  opacity: 0.75;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.fanyi-failed-retry {
-  appearance: none;
-  background: transparent;
-  border: 1px solid rgba(230, 150, 60, 0.55);
-  color: inherit;
-  font: inherit;
-  border-radius: 9999px;
-  padding: 1px 8px;
-  cursor: pointer;
-}
-.fanyi-failed-retry:hover { background: rgba(230, 150, 60, 0.1); }
-
-/* Places where users explicitly type newlines — keep them preserved regardless
-   of whether the host page's CSS inheritance happens to propagate pre-wrap. */
-[data-testid="tweetText"] .fanyi-translation,
-.js-comment-body .fanyi-translation,
-.markdown-body .fanyi-translation {
-  display: block;
-  white-space: pre-wrap;
-}
-
-[data-fanyi-state="translation"] [data-fanyi-id] > *:not([data-fanyi-wrapper]) {
-  display: none !important;
-}
-
-/* Global progress pill — single bottom-right badge, replaces per-unit spinners. */
+/* ============================================================
+   1. PROGRESS PILL
+   ============================================================ */
 .fanyi-progress {
   position: fixed !important;
-  bottom: 16px !important;
   right: 16px !important;
+  bottom: 16px !important;
   z-index: 2147483646 !important;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px 8px 12px;
-  background: rgba(22, 28, 36, 0.92);
-  color: #fff;
-  border-radius: 9999px;
-  font: 500 12px/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  cursor: pointer;
-  user-select: none;
-  opacity: 0.92;
-  transition: opacity 0.2s, transform 0.2s;
-  pointer-events: auto;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 8px 12px 8px 10px !important;
+  background: var(--fanyi-glass) !important;
+  border-radius: 9999px !important;
+  box-shadow: var(--fanyi-shadow) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  backdrop-filter: blur(6px) !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  opacity: 0 !important;
+  transform: translateY(6px) !important;
+  transition: opacity 200ms ease-out, transform 200ms ease-out !important;
+  pointer-events: auto !important;
 }
-.fanyi-progress:hover { opacity: 1; transform: translateY(-1px); }
+.fanyi-progress.fanyi-in {
+  opacity: 1 !important;
+  transform: translateY(0) !important;
+}
+.fanyi-progress:hover .fanyi-progress-text {
+  color: #fff !important;
+}
+.fanyi-progress:hover .fanyi-progress-text::after {
+  content: " · 取消" !important;
+  color: var(--fanyi-text-dim) !important;
+}
+
 .fanyi-progress-spin {
-  width: 10px; height: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: fanyi-spin 0.7s linear infinite;
-  flex-shrink: 0;
-}
-.fanyi-progress-done .fanyi-progress-spin {
-  border-color: transparent;
-  animation: none;
-  background: #3ecf8e;
-  position: relative;
-}
-.fanyi-progress-done .fanyi-progress-spin::after {
-  content: "";
-  position: absolute;
-  left: 2.5px; top: 1px;
-  width: 3px; height: 6px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-@keyframes fanyi-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .fanyi-progress-spin { animation-duration: 2s; }
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  border: 2px solid rgba(45, 140, 240, 0.25) !important;
+  border-top-color: var(--fanyi-blue) !important;
+  animation: fanyi-spin 0.7s linear infinite !important;
+  flex-shrink: 0 !important;
 }
 
-/* Selection translation — tiny "译" pill that appears next to a text selection */
-.fanyi-sel-btn {
+.fanyi-progress-text {
+  font-size: 12px !important;
+  font-variant-numeric: tabular-nums !important;
+  color: var(--fanyi-text) !important;
+  white-space: nowrap !important;
+}
+
+/* Done state */
+.fanyi-progress.fanyi-progress-done .fanyi-progress-spin {
+  border: 0 !important;
+  background: var(--fanyi-green) !important;
+  animation: none !important;
+  position: relative !important;
+}
+.fanyi-progress.fanyi-progress-done .fanyi-progress-spin::after {
+  content: "" !important;
   position: absolute !important;
-  z-index: 2147483647 !important;
-  width: 24px; height: 24px;
-  display: none;
-  align-items: center; justify-content: center;
-  background: var(--fanyi-accent); color: #fff;
-  border-radius: 12px;
-  font: 600 12px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.08);
-  cursor: pointer;
-  user-select: none;
-  transition: transform 0.12s ease;
+  left: 2.5px !important;
+  top: 4.5px !important;
+  width: 2px !important;
+  height: 4px !important;
+  border-right: 1.5px solid #0b1a12 !important;
+  border-bottom: 1.5px solid #0b1a12 !important;
+  transform: rotate(45deg) !important;
 }
-.fanyi-sel-btn:hover { transform: scale(1.08); }
-
-/* Result popover shown when the "译" button is clicked */
-.fanyi-sel-pop {
-  position: absolute !important;
-  z-index: 2147483647 !important;
-  max-width: 360px;
-  min-width: 120px;
-  display: none;
-  padding: 10px 12px;
-  background: rgba(22, 28, 36, 0.96);
-  color: #fff;
-  border-radius: 10px;
-  font: 400 13px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  white-space: pre-wrap;
-  word-break: break-word;
-  user-select: text;
-}
-.fanyi-sel-pop-text { color: #fff; }
-.fanyi-sel-pop-spin {
-  display: inline-block;
-  width: 10px; height: 10px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: fanyi-spin 0.7s linear infinite;
-  margin-right: 8px;
-  vertical-align: middle;
+.fanyi-progress.fanyi-progress-done:hover .fanyi-progress-text::after {
+  content: "" !important;
 }
 
-/* Floating action button — anchored to the mid-right edge of the viewport to
-   avoid conflict with site UI that commonly sits in the bottom-right corner
-   (X's compose button, chat widgets, back-to-top, cookie banners). */
+/* ============================================================
+   2. FLOATING ACTION BUTTON
+   ============================================================ */
 .fanyi-fab {
   position: fixed !important;
   top: 50% !important;
   right: 4px !important;
-  transform: translateY(-50%);
+  transform: translateY(-50%) !important;
   z-index: 2147483645 !important;
-  width: 32px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(22, 28, 36, 0.7);
-  color: rgba(255, 255, 255, 0.85);
-  border-radius: 50%;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  cursor: pointer;
-  user-select: none;
-  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
-  transition: opacity 0.2s, background 0.2s, transform 0.15s;
-  opacity: 0.28;
+  width: 32px !important;
+  height: 32px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  border: 1.5px solid rgba(154, 164, 178, 0.55) !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  opacity: 0.3 !important;
+  cursor: pointer !important;
+  transition: opacity 150ms ease-out, background 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out !important;
+  padding: 0 !important;
+  outline: none !important;
+  -webkit-tap-highlight-color: transparent !important;
 }
-.fanyi-fab:hover { opacity: 1; transform: translateY(-50%) scale(1.06); }
+.fanyi-fab:hover {
+  opacity: 0.8 !important;
+}
 .fanyi-fab.fanyi-fab-on {
-  background: var(--fanyi-accent);
-  color: #fff;
-  opacity: 0.85;
+  background: var(--fanyi-blue) !important;
+  border-color: var(--fanyi-blue) !important;
+  opacity: 0.85 !important;
+  box-shadow: 0 2px 10px rgba(45, 140, 240, 0.35) !important;
 }
-.fanyi-fab.fanyi-fab-on:hover { opacity: 1; }
-.fanyi-fab-label { display: block; }
+.fanyi-fab.fanyi-fab-on:hover {
+  opacity: 1 !important;
+}
+.fanyi-fab:active {
+  transform: translateY(-50%) scale(0.94) !important;
+}
 
+.fanyi-fab-label {
+  font-family: var(--fanyi-font) !important;
+  font-size: 13px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  color: #fff !important;
+  letter-spacing: 0.5px !important;
+  user-select: none !important;
+  pointer-events: none !important;
+}
+.fanyi-fab:not(.fanyi-fab-on) .fanyi-fab-label {
+  color: rgba(154, 164, 178, 0.9) !important;
+}
+
+/* FAB menu — slides out to the LEFT of the FAB */
 .fanyi-fab-menu {
   position: fixed !important;
   top: 50% !important;
   right: 44px !important;
-  transform: translateY(-50%);
+  transform: translateY(-50%) translateX(4px) !important;
   z-index: 2147483646 !important;
-  display: none;
-  flex-direction: column;
-  min-width: 180px;
-  background: rgba(22, 28, 36, 0.96);
-  border-radius: 10px;
-  padding: 6px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  font: 400 13px/1.3 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+  width: 180px !important;
+  background: var(--fanyi-glass-strong) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--fanyi-shadow) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  backdrop-filter: blur(6px) !important;
+  padding: 4px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 150ms ease-out, transform 150ms ease-out !important;
+  display: flex !important;
+  flex-direction: column !important;
 }
+.fanyi-fab-menu.fanyi-open {
+  opacity: 1 !important;
+  transform: translateY(-50%) translateX(0) !important;
+  pointer-events: auto !important;
+}
+
 .fanyi-fab-menu button {
-  appearance: none;
-  background: transparent;
-  color: #fff;
-  border: none;
-  text-align: left;
-  padding: 8px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font: inherit;
+  all: unset !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  align-items: center !important;
+  width: 100% !important;
+  padding: 8px 10px !important;
+  border-radius: 6px !important;
+  font-family: var(--fanyi-font) !important;
+  font-size: 13px !important;
+  color: var(--fanyi-text) !important;
+  cursor: pointer !important;
+  transition: background 120ms ease-out !important;
+  text-align: left !important;
+  line-height: 1.3 !important;
 }
-.fanyi-fab-menu button:hover { background: rgba(255, 255, 255, 0.08); }
-.fanyi-fab-menu button.fanyi-fab-menu-sub {
-  opacity: 0.65;
-  font-size: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  margin-top: 4px;
+.fanyi-fab-menu button:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+.fanyi-fab-menu button[data-act="hide"] {
+  color: var(--fanyi-text-dim) !important;
+  font-size: 12px !important;
+  margin-top: 4px !important;
+  position: relative !important;
+}
+.fanyi-fab-menu button[data-act="hide"]::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 8px !important;
+  right: 8px !important;
+  top: -4px !important;
+  height: 1px !important;
+  background: var(--fanyi-stroke-strong) !important;
+}
+
+/* ============================================================
+   3. SELECTION "译" BUTTON
+   ============================================================ */
+.fanyi-sel-btn {
+  position: absolute !important;
+  z-index: 2147483647 !important;
+  width: 24px !important;
+  height: 24px !important;
+  border-radius: 50% !important;
+  background: var(--fanyi-blue) !important;
+  border: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  color: #fff !important;
+  font-family: var(--fanyi-font) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08) !important;
+  padding: 0 !important;
+  outline: none !important;
+  transform: scale(0.8) !important;
+  opacity: 0 !important;
+  transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 150ms ease-out !important;
+  user-select: none !important;
+}
+.fanyi-sel-btn.fanyi-in {
+  transform: scale(1) !important;
+  opacity: 1 !important;
+}
+.fanyi-sel-btn:hover {
+  background: #4a9df2 !important;
+}
+
+.fanyi-sel-btn.fanyi-loading {
+  background: var(--fanyi-glass) !important;
+  cursor: default !important;
+}
+.fanyi-sel-btn.fanyi-loading span {
+  display: none !important;
+}
+.fanyi-sel-btn.fanyi-loading::after {
+  content: "" !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  border: 2px solid rgba(255, 255, 255, 0.25) !important;
+  border-top-color: #fff !important;
+  animation: fanyi-spin 0.7s linear infinite !important;
+}
+
+/* ============================================================
+   4. SELECTION RESULT POPOVER
+   ============================================================ */
+.fanyi-sel-pop {
+  position: absolute !important;
+  z-index: 2147483647 !important;
+  max-width: 360px !important;
+  min-width: 120px !important;
+  padding: 10px 12px !important;
+  background: var(--fanyi-glass) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--fanyi-shadow) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  backdrop-filter: blur(6px) !important;
+  opacity: 0 !important;
+  transform: translateY(4px) !important;
+  transition: opacity 180ms ease-out, transform 180ms ease-out !important;
+  pointer-events: auto !important;
+}
+.fanyi-sel-pop.fanyi-in {
+  opacity: 1 !important;
+  transform: translateY(0) !important;
+}
+.fanyi-sel-pop.fanyi-out {
+  opacity: 0 !important;
+  transform: translateY(2px) !important;
+}
+
+.fanyi-sel-pop::before {
+  content: "译" !important;
+  display: block !important;
+  font-family: var(--fanyi-font) !important;
+  font-size: 9px !important;
+  font-weight: 600 !important;
+  letter-spacing: 1px !important;
+  color: var(--fanyi-blue) !important;
+  text-transform: uppercase !important;
+  margin-bottom: 4px !important;
+  line-height: 1 !important;
+}
+
+.fanyi-sel-pop-text {
+  font-family: var(--fanyi-font) !important;
+  font-size: 13.5px !important;
+  line-height: 1.55 !important;
+  color: var(--fanyi-text) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  word-wrap: break-word !important;
+  overflow-wrap: break-word !important;
+}
+
+/* inline spinner state, before text arrives */
+.fanyi-sel-pop-spin {
+  display: inline-block !important;
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  border: 2px solid rgba(255, 255, 255, 0.2) !important;
+  border-top-color: var(--fanyi-blue) !important;
+  animation: fanyi-spin 0.7s linear infinite !important;
+  vertical-align: -1px !important;
+  margin-right: 6px !important;
+}
+
+/* ============================================================
+   5. FAILURE CHIP
+   Note: <font class="fanyi-translation fanyi-failed"> is the
+   translation wrapper spot. When failed, we DON'T render
+   translated text there — we render a distinct chip BELOW the
+   source paragraph via .fanyi-failed-msg sibling.
+   ============================================================ */
+font.fanyi-translation {
+  display: block;
+  /* plain-text translation styling handled by the extension’s
+     other rules; kept minimal here because this element is
+     in-page content, not an overlay. */
+}
+font.fanyi-translation.fanyi-failed {
+  display: none; /* suppress the empty wrapper on failure */
+}
+
+.fanyi-failed-msg {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  margin-top: 4px !important;
+  padding: 2px 8px 2px 8px !important;
+  background: var(--fanyi-warn) !important;
+  color: #2a1d07 !important;
+  border-radius: 9999px !important;
+  font-family: var(--fanyi-font) !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15) !important;
+  user-select: none !important;
+  vertical-align: middle !important;
+}
+.fanyi-failed-msg .fanyi-failed-dot {
+  width: 2px !important;
+  height: 2px !important;
+  border-radius: 50% !important;
+  background: rgba(42, 29, 7, 0.55) !important;
+  flex-shrink: 0 !important;
+}
+.fanyi-failed-retry {
+  all: unset !important;
+  box-sizing: border-box !important;
+  font-family: var(--fanyi-font) !important;
+  font-size: 12px !important;
+  color: #2a1d07 !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  padding: 0 2px !important;
+  border-radius: 4px !important;
+  transition: background 120ms ease-out !important;
+}
+.fanyi-failed-retry:hover {
+  background: rgba(42, 29, 7, 0.12) !important;
+}
+
+/* ============================================================
+   Shared keyframes
+   ============================================================ */
+@keyframes fanyi-spin {
+  to { transform: rotate(360deg); }
 }

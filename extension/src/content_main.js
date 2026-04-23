@@ -66,18 +66,20 @@ function markFailure(el) {
   return n < MAX_FAILS;
 }
 
-/** Final-failure UI: show a small "⚠ 翻译失败 · 重试" hint under the source
- * block. Click the retry link to clear failure state and let the next scan
- * pick the block up again. */
+/** Final-failure UI: insert a compact warm-orange chip as the last child of
+ * the source block with "⚠ 翻译失败 · 重试". Retry button clears fail state
+ * and re-queues the block. The chip is distinct from any translation wrapper
+ * so the user doesn't confuse it with actual translated output. */
 function renderPermanentFailure(el) {
-  if (el.querySelector(":scope > .fanyi-failed")) return;
-  const w = document.createElement("font");
-  w.className = "fanyi-translation fanyi-failed";
-  w.setAttribute("data-fanyi-wrapper", "1");
-  w.setAttribute("data-fanyi-skip", "1");
-  const span = document.createElement("span");
-  span.className = "fanyi-failed-msg";
-  span.textContent = "⚠ 翻译失败";
+  if (el.querySelector(":scope > .fanyi-failed-msg")) return;
+  const chip = document.createElement("span");
+  chip.className = "fanyi-failed-msg";
+  chip.setAttribute("data-fanyi-wrapper", "1");
+  chip.setAttribute("data-fanyi-skip", "1");
+  chip.append(
+    document.createTextNode("⚠ 翻译失败"),
+    Object.assign(document.createElement("span"), { className: "fanyi-failed-dot" }),
+  );
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "fanyi-failed-retry";
@@ -88,13 +90,11 @@ function renderPermanentFailure(el) {
     el.removeAttribute(MARK_ATTR);
     el.removeAttribute(FAIL_ATTR);
     el.removeAttribute("data-fanyi-src");
-    w.remove();
-    // Re-run translate on this one element directly — no need to wait for a
-    // whole-page scan.
+    chip.remove();
     translateUnits([{ el, text: extractPlainText(el) }]);
   });
-  w.append(span, btn);
-  el.appendChild(w);
+  chip.appendChild(btn);
+  el.appendChild(chip);
 }
 
 function extractPlainText(el) {
@@ -157,6 +157,9 @@ function pillEnsure() {
   pillEl.innerHTML = `<span class="fanyi-progress-spin"></span><span class="fanyi-progress-text">翻译中</span>`;
   pillEl.addEventListener("click", () => disable());
   document.documentElement.appendChild(pillEl);
+  // Trigger entrance animation (opacity / translate) on next frame so the
+  // initial styles take effect before we add the reveal class.
+  requestAnimationFrame(() => pillEl?.classList.add("fanyi-in"));
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
 }
 
@@ -396,13 +399,18 @@ function selEnsureBtn() {
   document.documentElement.appendChild(selBtnEl);
 }
 
-function selHideBtn() { if (selBtnEl) selBtnEl.style.display = "none"; }
+function selHideBtn() {
+  if (!selBtnEl) return;
+  selBtnEl.classList.remove("fanyi-in");
+  selBtnEl.style.display = "none";
+}
 
 function selShowBtnAt(rect) {
   selEnsureBtn();
   selBtnEl.style.display = "flex";
   selBtnEl.style.top = `${window.scrollY + rect.bottom + 6}px`;
   selBtnEl.style.left = `${window.scrollX + Math.max(rect.right - 22, rect.left)}px`;
+  requestAnimationFrame(() => selBtnEl?.classList.add("fanyi-in"));
 }
 
 function selOnChange() {
@@ -458,7 +466,8 @@ function selShowPop(x, y, text, loading) {
     : `<div class="fanyi-sel-pop-text">${selEscape(text)}</div>`;
   selPopEl.innerHTML = html;
   selPopEl.style.display = "block";
-  // Layout first to measure actual size, then clamp within viewport with an 8px gutter.
+  // Measure before applying final position + fade-in.
+  selPopEl.classList.remove("fanyi-in");
   selPopEl.style.visibility = "hidden";
   selPopEl.style.top = "0";
   selPopEl.style.left = "0";
@@ -472,9 +481,14 @@ function selShowPop(x, y, text, loading) {
   selPopEl.style.top = `${window.scrollY + top}px`;
   selPopEl.style.left = `${window.scrollX + left}px`;
   selPopEl.style.visibility = "";
+  requestAnimationFrame(() => selPopEl?.classList.add("fanyi-in"));
 }
 
-function selHidePop() { if (selPopEl) selPopEl.style.display = "none"; }
+function selHidePop() {
+  if (!selPopEl) return;
+  selPopEl.classList.remove("fanyi-in");
+  selPopEl.style.display = "none";
+}
 
 function selEscape(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -524,7 +538,7 @@ function fabRender() {
 }
 
 function fabToggleMenu() {
-  if (fabMenuEl && fabMenuEl.style.display !== "none") { fabCloseMenu(); return; }
+  if (fabMenuEl?.classList.contains("fanyi-open")) { fabCloseMenu(); return; }
   if (!fabMenuEl) {
     fabMenuEl = document.createElement("div");
     fabMenuEl.className = "fanyi-fab-menu";
@@ -539,12 +553,13 @@ function fabToggleMenu() {
     <button data-act="toggle">${state.enabled ? "关闭翻译" : "翻译此页"}</button>
     <button data-act="auto">${isAuto ? "不再自动翻译本站" : "始终自动翻译本站"}</button>
     <button data-act="options">设置…</button>
-    <button data-act="hide" class="fanyi-fab-menu-sub">隐藏悬浮球（可在设置中重新开启）</button>
+    <button data-act="hide">隐藏悬浮球</button>
   `;
-  fabMenuEl.style.display = "flex";
+  // Reveal via class so the design's CSS transition (opacity + translateX) plays.
+  requestAnimationFrame(() => fabMenuEl?.classList.add("fanyi-open"));
 }
 
-function fabCloseMenu() { if (fabMenuEl) fabMenuEl.style.display = "none"; }
+function fabCloseMenu() { if (fabMenuEl) fabMenuEl.classList.remove("fanyi-open"); }
 
 async function fabOnMenuClick(ev) {
   const b = ev.target.closest("button[data-act]");

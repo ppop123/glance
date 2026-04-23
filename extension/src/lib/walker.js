@@ -333,9 +333,9 @@ export function appendTranslation(el, translated) {
 }
 
 export function removeAllTranslations(root = document.body) {
-  root.querySelectorAll(`.${WRAPPER_CLASS}`).forEach(n => n.remove());
-  // Union select — some nodes may have been unmarked (MARK_ATTR removed) after a
-  // retryable failure but still carry SRC_HASH_ATTR / fail counter from a prior attempt.
+  // Kill any translation wrappers AND the failure-chip we render when a block
+  // has exhausted retries. The chip is a sibling, not a child, of the marker.
+  root.querySelectorAll(`.${WRAPPER_CLASS}, .fanyi-failed-msg`).forEach(n => n.remove());
   root.querySelectorAll(
     `[${MARK_ATTR}], [${SRC_HASH_ATTR}], [data-fanyi-fail]`
   ).forEach(n => {
