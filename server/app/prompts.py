@@ -50,7 +50,9 @@ TOPIC_HINTS: dict[str, str] = {
         "Genre: academic paper / preprint. Preserve LaTeX math ($...$, \\begin{...}, \\cite), citations "
         "(Author et al., 2023), equation numbers, dataset names, and model names verbatim. Use formal, "
         "precise phrasing. Keep technical terminology faithful — prefer established discipline-standard "
-        "translations over literal word-by-word."
+        "translations over literal word-by-word. "
+        "IMPORTANT: paper titles and section headings ARE prose that MUST be translated — do not leave "
+        "an English title in the output. Author names and affiliations stay in their original script."
     ),
     "finance": (
         "Genre: finance / markets / investing. Preserve tickers ($AAPL, 700.HK), numeric values, "

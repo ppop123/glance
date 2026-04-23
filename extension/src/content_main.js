@@ -2,7 +2,7 @@
 // Loaded via dynamic import from content_guard.js.
 
 import { translateStream, translateOne } from "./lib/client.js";
-import { appendTranslation, markUnit, removeAllTranslations, sameLanguageAs, isStale, clearUnit, MARK_ATTR } from "./lib/walker.js";
+import { appendTranslation, markUnit, removeAllTranslations, sameLanguageAs, isStale, clearUnit, dedupStaleWrappers, MARK_ATTR } from "./lib/walker.js";
 import { pickPrimaryVideo, transcribeVideo } from "./subtitle.js";
 
 const DEFAULT_AUTO_SITES = ["x.com", "twitter.com", "github.com"];
@@ -227,6 +227,20 @@ function pillReset() {
 
 async function translateUnits(units) {
   if (!units.length) return;
+  // Self-heal pass: if any unit's element ended up with 2+ wrapper siblings
+  // (possible if a prior version of the code raced, or if the user loaded
+  // older code earlier in this tab), collapse them. Cheap — a single
+  // querySelectorAll per element. Logs when it actually finds any so we can
+  // tell from the console whether this codepath is doing real work.
+  let collapsed = 0;
+  for (const u of units) {
+    const wrappers = u.el.querySelectorAll(`:scope > .fanyi-translation`);
+    if (wrappers.length > 1) {
+      for (let i = 0; i < wrappers.length - 1; i++) wrappers[i].remove();
+      collapsed++;
+    }
+  }
+  if (collapsed) console.warn("[fanyi] self-heal: collapsed duplicate wrappers on %d element(s)", collapsed);
   const fresh = [];
   let skippedSame = 0;
   let retranslate = 0;
@@ -602,6 +616,10 @@ function fabInstall() {
 
 export async function boot() {
   ensureStyles();
+  // One-off sweep for any stale multi-wrapper state left behind by earlier
+  // buggy versions of appendTranslation. Safe no-op on clean pages.
+  const removed = dedupStaleWrappers(document.body);
+  if (removed) console.warn("[fanyi] boot: removed %d stale duplicate wrappers", removed);
   state.adapter = await pickAdapter();
   state.site = state.adapter.site;
 

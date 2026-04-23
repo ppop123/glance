@@ -339,16 +339,23 @@ function extractTweetTag(article) {
   return m ? "tweet:" + m[1] : null;
 }
 
-/** textContent-like walker that recovers <img alt="..."> (X uses these for flag emoji, custom emoji). */
-function gatherTextWithImages(root, skipEl) {
+/** textContent-like walker that recovers <img alt="..."> (X uses these for flag emoji, custom emoji).
+ * `skipSet` is a Set of elements to treat as opaque (don't descend into, don't emit their text). */
+function gatherTextWithImages(root, skipSet) {
   const out = [];
   const walker = (node) => {
-    if (node === skipEl) return;
+    if (skipSet && skipSet.has(node)) return;
     if (node.nodeType === Node.TEXT_NODE) {
       out.push(node.nodeValue || "");
       return;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) return;
+    // Also skip anything we marked as a translation wrapper / failure chip, even
+    // if it isn't in skipSet (defense in depth — a dup sneak-in should never
+    // pollute the source text fed back to the LLM).
+    if (node.classList?.contains("fanyi-translation") ||
+        node.classList?.contains("fanyi-failed-msg") ||
+        node.hasAttribute?.("data-fanyi-wrapper")) return;
     // <img alt="🇺🇸"> or custom emoji — use alt
     if (node.tagName === "IMG") {
       const alt = node.getAttribute("alt");
@@ -367,8 +374,16 @@ function tweetTextUnits(article) {
   const units = [];
   const textEl = article.querySelector('[data-testid="tweetText"]');
   if (textEl) {
-    const wrap = textEl.querySelector(`:scope > .fanyi-translation`);
-    const raw = gatherTextWithImages(textEl, wrap);
+    // Exclude ALL previously-attached wrappers (and failure chips) from source
+    // extraction. A prior bug could leave 2+ wrappers on the same element;
+    // using `querySelector` (singular) would only skip the first, and the rest
+    // would leak Chinese translation into the 'source' re-sent to the LLM —
+    // which is exactly how a single wrapper ends up containing duplicated
+    // translation content. `querySelectorAll` is the fix.
+    const skipSet = new Set(textEl.querySelectorAll(
+      `:scope > .fanyi-translation, :scope > .fanyi-failed-msg, :scope [data-fanyi-wrapper]`
+    ));
+    const raw = gatherTextWithImages(textEl, skipSet);
     const text = normalizeText(raw);
     if (text.length >= 2) {
       const base = extractTweetTag(article);
