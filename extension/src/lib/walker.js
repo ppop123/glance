@@ -30,6 +30,16 @@ const SKIP_SELECTORS = [
   "[data-fanyi-skip]",
   // placeholders & toasts on many sites
   "[role='tooltip']",
+  // Page chrome: site-wide header/footer and complementary-role asides almost
+  // never contain article-level content worth translating. Keeps donation
+  // banners, cookie notices, tool lists, license text, share boxes, etc. out
+  // of the flow. Plain <aside> is NOT filtered here — many docs and blog
+  // sites use it for in-article callouts / notes / warnings / pull quotes,
+  // which ARE content the user wants translated. Only the ARIA-tagged
+  // complementary role (used for site-level sidebars) is safe to skip.
+  "header[role='banner']",
+  "footer[role='contentinfo']",
+  "[role='complementary']",
   // Navigation menus: sidebar items are short link labels packed into a narrow
   // column. Translating them produces CJK that wraps mid-word, stacking each
   // char on its own line (see Wikipedia Vector skin sidebar). Same story for
@@ -44,6 +54,16 @@ const SKIP_SELECTORS = [
   ".interlanguage-link",
   ".interlanguage-link-target",
   ".mw-portlet",
+  // arXiv chrome: bibliographic-tools strip at the bottom, the right-hand
+  // "Access Paper" / "References & Citations" / "Bookmark" sidebar, and the
+  // arXivLabs boilerplate. All repeat across every abstract page.
+  ".bib-sharing-content",
+  ".extra-services",
+  ".extra-ref-cite",
+  ".bookmarks",
+  "#labstabs",
+  ".labstabs",
+  "#labs-mini-tabs",
 ];
 
 export const MARK_ATTR = "data-fanyi-id";
@@ -146,7 +166,11 @@ function isAllPunctOrShort(s) {
  *   - <pre>...</pre>   → ```\n...\n``` (fenced block)
  *   - <br>             → "\n"
  *   - <img alt="..">   → alt text (emoji shortcuts, flags, etc.)
- *   - children of SKIP_TAGS / SKIP_SELECTORS contribute nothing. */
+ *   - children of SKIP_TAGS / SKIP_SELECTORS contribute nothing.
+ *   - NESTED BLOCK descendants are NOT descended into — their text belongs to
+ *     their own unit. Without this, an outer DIV containing inner DIV/H1/LI
+ *     would pull its children's text into the outer's translation AND each
+ *     child would also be translated separately, producing visible duplicates. */
 function extractBlockText(block) {
   const out = [];
   const walk = (node) => {
@@ -161,6 +185,12 @@ function extractBlockText(block) {
       if (node.matches && node.matches(s)) return;
     }
     if (node.classList && node.classList.contains(WRAPPER_CLASS)) return;
+    // Stop at nested block elements (but NOT at the root block itself — those
+    // are translated as their own unit). Leaves any direct prose text of the
+    // outer block intact (e.g. `<div>Intro <ul>...</ul> Outro</div>` keeps
+    // "Intro" and "Outro" on the outer, lets the <ul>'s <li>s be their own
+    // units).
+    if (node !== block && BLOCK_TAGS.has(tag)) return;
     if (tag === "IMG") {
       const alt = node.getAttribute("alt");
       if (alt) out.push(alt);
@@ -181,7 +211,7 @@ function extractBlockText(block) {
     }
     for (const c of node.childNodes) walk(c);
   };
-  for (const c of block.childNodes) walk(c);
+  walk(block);
   return out.join("");
 }
 
@@ -347,4 +377,27 @@ export function removeAllTranslations(root = document.body) {
     n.removeAttribute(SRC_HASH_ATTR);
     n.removeAttribute("data-fanyi-fail");
   });
+}
+
+/** One-off sweep: if an element has more than one direct `.fanyi-translation`
+ * child, keep only the LAST and drop the earlier ones. Runs at boot to clean
+ * up accumulations left by pre-fix versions of appendTranslation so users
+ * don't have to do a hard reload just to shake them off. */
+export function dedupStaleWrappers(root) {
+  // Content scripts boot at document_start, so document.body may be null when
+  // boot() calls us during initial import. Just no-op — there can't be stale
+  // wrappers on a document that hasn't rendered yet.
+  root = root || document.body;
+  if (!root) return 0;
+  let removed = 0;
+  root.querySelectorAll(`[${MARK_ATTR}]`).forEach((el) => {
+    const wrappers = el.querySelectorAll(`:scope > .${WRAPPER_CLASS}`);
+    if (wrappers.length > 1) {
+      for (let i = 0; i < wrappers.length - 1; i++) {
+        wrappers[i].remove();
+        removed++;
+      }
+    }
+  });
+  return removed;
 }

@@ -151,32 +151,6 @@ $("#adv-toggle").addEventListener("click", () => {
   $("#adv-toggle").setAttribute("aria-expanded", String(open));
 });
 
-// Live sub-status label reflecting the seconds input.
-$("#subSeconds").addEventListener("input", () => {
-  const n = Math.max(5, Math.min(600, Number($("#subSeconds").value) || 60));
-  $("#sub-status").innerHTML = `<span>准备就绪 · 点击开始将转录当前视频的前 ${n} 秒</span>`;
-});
-
-$("#sub-go").addEventListener("click", async () => {
-  const tab = await currentTab();
-  if (!tab?.id) return;
-  const seconds = Math.max(5, parseInt($("#subSeconds").value || "60", 10));
-  const translate = $("#subTranslate").checked;
-  const targetLang = $("#targetLang").value || "zh-CN";
-  $("#sub-status").innerHTML = "<span>已启动 · 请看视频右上角</span>";
-  try {
-    await chrome.tabs.sendMessage(tab.id, { type: "fanyi:ensure-loaded" });
-    const r = await chrome.tabs.sendMessage(tab.id, {
-      type: "fanyi:transcribe-video",
-      opts: { maxSeconds: seconds, translate, targetLang, showToast: true },
-    });
-    if (r?.ok) $("#sub-status").innerHTML = `<span>✓ 已生成 ${r.cues} 条字幕</span>`;
-    else $("#sub-status").innerHTML = `<span>✗ ${escHtml(r?.err || "失败")}</span>`;
-  } catch (e) {
-    $("#sub-status").innerHTML = `<span>✗ ${escHtml(e?.message || String(e))}</span>`;
-  }
-});
-
 /** Populate provider + model selects from the server's /config list. */
 function populateProviderAndModel(desired) {
   const provSel = $("#provider");
