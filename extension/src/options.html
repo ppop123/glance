@@ -102,9 +102,51 @@
     </section>
 
     <section class="card">
-      <h2>添加 LLM 服务商</h2>
-      <p class="hint">服务商在服务器 <code>config.yaml</code> 的 <code>providers:</code> 列表里配置。下面是一些常见的免费 / 低价选项，点一个看详情即可复制到 config 里。修改后需要 <code>launchctl kickstart -k gui/$(id -u)/com.fanyi.server</code> 或重启服务生效。</p>
-      <div id="freeProviders" class="free-providers"></div>
+      <h2>LLM 服务商</h2>
+      <p class="hint">选一个模板，贴 API key，保存即可用。密钥存在本地（<code>~/.fanyi-ext/user_providers.json</code>），不会进 config.yaml 或 git。</p>
+
+      <div class="row">
+        <label for="providerTemplate">添加</label>
+        <select id="providerTemplate">
+          <option value="">— 选择服务商 —</option>
+        </select>
+      </div>
+
+      <div id="providerForm" class="prov-form" hidden>
+        <div class="row">
+          <label for="pfLabel">显示名</label>
+          <input id="pfLabel" type="text" placeholder="DeepSeek" style="flex:1">
+        </div>
+        <div class="row">
+          <label for="pfName">名称</label>
+          <input id="pfName" type="text" placeholder="deepseek" style="flex:1">
+          <span class="hint" style="margin:0 0 0 8px">model 前缀用</span>
+        </div>
+        <div class="row">
+          <label for="pfApiKey">API Key</label>
+          <input id="pfApiKey" type="password" placeholder="sk-..." style="flex:1">
+          <button type="button" id="pfToggleKey" class="btn-mini">显示</button>
+        </div>
+        <div class="row">
+          <label for="pfBaseUrl">端点</label>
+          <input id="pfBaseUrl" type="text" placeholder="https://api.example.com/v1" style="flex:1">
+        </div>
+        <div class="row" style="align-items:flex-start">
+          <label for="pfModels">模型列表</label>
+          <textarea id="pfModels" rows="3" placeholder="一行一个模型 id" style="flex:1"></textarea>
+        </div>
+        <div class="row">
+          <a id="pfDocLink" class="hint" href="#" target="_blank" rel="noopener" hidden>获取 API Key ↗</a>
+          <span id="pfResult" class="hint" style="margin-left:auto"></span>
+        </div>
+        <div class="row">
+          <button type="button" id="pfTest" class="btn">测试连接</button>
+          <button type="button" id="pfSave" class="btn primary">保存</button>
+          <button type="button" id="pfCancel" class="btn">取消</button>
+        </div>
+      </div>
+
+      <div id="providerList" class="prov-list" style="margin-top:12px"></div>
     </section>
 
     <section class="card">

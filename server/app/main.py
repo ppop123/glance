@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
+from .providers_store import ProvidersStore
 from .stats import StatsStore
 from .translator import TranslateItem, Translator
 from .vtt_cache import VttCache, canonical_url
@@ -48,6 +49,17 @@ class InvalidateReq(BaseModel):
     bump_glossary: bool = Field(default=False, description="increment glossary_version in memory (next put() miss)")
 
 
+class ProviderReq(BaseModel):
+    name: str
+    label: str | None = None
+    base_url: str
+    api_key: str = ""
+    protocol: str = "openai"
+    models: list[str] = []
+    enabled: bool = True
+    timeout_s: int = 60
+
+
 cfg = load_config()
 logging.basicConfig(
     level=cfg.log_level.upper(),
@@ -59,9 +71,10 @@ log = logging.getLogger("fanyi")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.cache = Cache(cfg.cache)
-    # Stats DB lives next to the translation cache — small and disposable.
     app.state.stats = StatsStore(cfg.cache.db_path.parent / "provider_stats.sqlite3")
-    app.state.translator = Translator(cfg, app.state.cache, app.state.stats)
+    # User-added providers live in their own JSON sidecar — keys never touch config.yaml.
+    app.state.providers_store = ProvidersStore(cfg.cache.db_path.parent / "user_providers.json")
+    app.state.translator = Translator(cfg, app.state.cache, app.state.stats, app.state.providers_store)
     app.state.asr_client = httpx.AsyncClient(base_url=cfg.asr.base_url, timeout=cfg.asr.timeout_s) if cfg.asr.enabled else None
     # VTT transcripts live in a separate DB so purging translation cache doesn't nuke expensive ASR output
     vtt_path = cfg.cache.db_path.parent / "vtt.sqlite3"
@@ -167,6 +180,102 @@ async def providers_stats(days: int = 30):
     """Per-provider call stats — latency, success rate, token usage."""
     rows = app.state.stats.aggregate(days=max(1, min(365, days)))
     return {"days": days, "rows": rows}
+
+
+def _provider_view(p, source: str) -> dict:
+    """JSON shape returned to the extension. api_key is NEVER sent — the UI
+    just needs to know the provider exists and which models it supplies."""
+    return {
+        "name": p.name, "label": p.label or p.name,
+        "base_url": p.base_url, "protocol": p.protocol,
+        "models": list(p.models), "enabled": p.enabled, "timeout_s": p.timeout_s,
+        "source": source,        # "config" = from config.yaml (read-only in UI)
+                                 # "user"   = from user_providers.json (editable)
+        "has_api_key": bool(p.api_key),
+    }
+
+
+@app.get("/providers")
+async def list_providers():
+    """All providers — those defined in config.yaml AND those added via UI."""
+    from_cfg = {p.name for p in cfg.providers}
+    out = [_provider_view(p, "config") for p in cfg.providers]
+    for p in app.state.providers_store.list():
+        if p.name in from_cfg:
+            # config wins; don't shadow with a user entry of the same name.
+            continue
+        out.append(_provider_view(p, "user"))
+    return {"providers": out}
+
+
+@app.post("/providers")
+async def upsert_provider(req: ProviderReq):
+    """Add / update a user-defined provider. api_key is stored only here
+    (user_providers.json, user-readable); never makes it into config.yaml."""
+    if not req.name.strip() or ":" in req.name:
+        raise HTTPException(400, "provider name must be non-empty and must not contain ':'")
+    if cfg.find_provider(req.name) is not None:
+        raise HTTPException(400, f"'{req.name}' is reserved by config.yaml — rename or remove it there first")
+    try:
+        app.state.providers_store.upsert(
+            name=req.name, label=req.label or "", base_url=req.base_url,
+            api_key=req.api_key, protocol=req.protocol, models=req.models,
+            enabled=req.enabled, timeout_s=req.timeout_s,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await app.state.translator.reload_providers()
+    return {"ok": True}
+
+
+@app.delete("/providers/{name}")
+async def delete_provider(name: str):
+    if cfg.find_provider(name) is not None:
+        raise HTTPException(400, f"'{name}' is defined in config.yaml, not the user store — edit config.yaml directly")
+    if not app.state.providers_store.delete(name):
+        raise HTTPException(404, f"no user provider named '{name}'")
+    await app.state.translator.reload_providers()
+    return {"ok": True}
+
+
+@app.post("/providers/test")
+async def test_provider(req: ProviderReq):
+    """Try a single tiny translation against the given provider config WITHOUT
+    saving. Used by the options UI to verify the key + base_url + model before
+    the user commits."""
+    if not req.models:
+        raise HTTPException(400, "need at least one model to test")
+    model = req.models[0]
+    test_text = "Hello, world."
+    import time
+    headers = {}
+    if req.api_key:
+        headers["Authorization"] = f"Bearer {req.api_key}"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a translator. Translate to Chinese. Output only the translation."},
+            {"role": "user", "content": test_text},
+        ],
+        "temperature": 0,
+        "max_tokens": 32,
+        "stream": False,
+    }
+    t0 = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(base_url=req.base_url.rstrip("/"), timeout=req.timeout_s, headers=headers) as c:
+            r = await c.post("/chat/completions", json=body)
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            if r.status_code >= 400:
+                return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}", "latency_ms": latency_ms}
+            data = r.json()
+            try:
+                content = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError):
+                content = ""
+            return {"ok": True, "latency_ms": latency_ms, "sample": f"{test_text} → {content.strip()[:100]}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "latency_ms": int((time.perf_counter() - t0) * 1000)}
 
 
 @app.post("/cache/invalidate")

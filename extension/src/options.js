@@ -65,154 +65,318 @@ async function refreshProviderStats() {
   }
 }
 
-/* ── Free / popular LLM provider catalog ─────────────────────────────────
- * Static list. YAML snippets are meant to be copy-pasted into server's
- * config.yaml `providers:` section. Users still have to create their own
- * API key at each service's console. */
-const FREE_PROVIDER_CATALOG = [
+/* ── Provider template catalog ───────────────────────────────────────────
+ * Pre-filled provider templates shown in the "添加" dropdown. Picking one
+ * prefills the provider form with sensible defaults; the user just pastes
+ * their API key and saves. `freeTier` flag surfaces the ones with a usable
+ * free offering. */
+const PROVIDER_CATALOG = [
+  {
+    id: "glm", label: "智谱 GLM（有免费模型）", region: "cn", freeTier: true,
+    note: "GLM-4.5-Flash / GLM-4-Flash 完全免费。注册即用，国内直连。",
+    docUrl: "https://open.bigmodel.cn",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    protocol: "openai",
+    models: ["glm-4.5-flash", "glm-4-flash", "glm-4-plus"],
+  },
+  {
+    id: "siliconflow", label: "硅基流动（有免费模型）", region: "cn", freeTier: true,
+    note: "Qwen2.5-7B-Instruct 等模型免费调用。国内稳定，注册送 ¥14 额度。",
+    docUrl: "https://cloud.siliconflow.cn",
+    base_url: "https://api.siliconflow.cn/v1",
+    protocol: "openai",
+    models: ["Qwen/Qwen2.5-7B-Instruct", "Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3"],
+  },
+  {
+    id: "groq", label: "Groq（免费层，超快）", region: "intl", freeTier: true,
+    note: "LPU 硬件 2000+ tok/s。每天 14.4k 请求免费。翻译质量略逊 GPT/Claude。",
+    docUrl: "https://console.groq.com",
+    base_url: "https://api.groq.com/openai/v1",
+    protocol: "openai",
+    models: ["llama-3.3-70b-versatile", "deepseek-r1-distill-llama-70b"],
+  },
+  {
+    id: "gemini", label: "Gemini（免费层）", region: "intl", freeTier: true,
+    note: "Google AI Studio。每分钟限速，但有免费调用次数。OpenAI 兼容模式。",
+    docUrl: "https://aistudio.google.com/apikey",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    protocol: "openai",
+    models: ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+  },
+  {
+    id: "openrouter", label: "OpenRouter（聚合，部分免费）", region: "intl", freeTier: true,
+    note: "一个 key 聚合 Claude / GPT / Gemini / Llama。:free 后缀的模型零费用。",
+    docUrl: "https://openrouter.ai",
+    base_url: "https://openrouter.ai/api/v1",
+    protocol: "openai",
+    models: [
+      "google/gemini-2.0-flash-exp:free",
+      "meta-llama/llama-3.3-70b-instruct:free",
+      "anthropic/claude-haiku-4.5",
+    ],
+  },
   {
     id: "deepseek", label: "DeepSeek", region: "cn",
-    note: "国内直连稳，按量付费便宜（input ¥1/M，output ¥2/M）。首次注册送额度。",
-    console: "https://platform.deepseek.com",
-    yaml: `  - name: deepseek
-    label: DeepSeek
-    base_url: "https://api.deepseek.com/v1"
-    api_key: "sk-YOUR-KEY"
-    protocol: openai
-    models: [deepseek-chat, deepseek-v3.1]`,
+    note: "按量付费便宜（input ¥1/M，output ¥2/M）。国内直连。",
+    docUrl: "https://platform.deepseek.com",
+    base_url: "https://api.deepseek.com/v1",
+    protocol: "openai",
+    models: ["deepseek-chat", "deepseek-v3.1"],
   },
   {
     id: "kimi", label: "Moonshot Kimi", region: "cn",
-    note: "月之暗面，长上下文 128k，国内访问稳。价格中等。",
-    console: "https://platform.moonshot.cn",
-    yaml: `  - name: kimi
-    label: Moonshot Kimi
-    base_url: "https://api.moonshot.cn/v1"
-    api_key: "sk-YOUR-KEY"
-    protocol: openai
-    models: [moonshot-v1-8k, moonshot-v1-32k, moonshot-v1-128k]`,
+    note: "长上下文 128k。价格中等。国内访问稳。",
+    docUrl: "https://platform.moonshot.cn",
+    base_url: "https://api.moonshot.cn/v1",
+    protocol: "openai",
+    models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
   },
   {
-    id: "doubao", label: "Doubao (字节豆包)", region: "cn",
+    id: "doubao", label: "Doubao（字节豆包）", region: "cn",
     note: "火山引擎。豆包 pro 翻译质量不错，价格和 DeepSeek 相近。",
-    console: "https://www.volcengine.com/product/doubao",
-    yaml: `  - name: doubao
-    label: Doubao
-    base_url: "https://ark.cn-beijing.volces.com/api/v3"
-    api_key: "YOUR-ARK-KEY"
-    protocol: openai
-    models: [doubao-seed-1-6-250615, doubao-seed-1-6-flash-250615]`,
-  },
-  {
-    id: "zhipu", label: "智谱 GLM", region: "cn",
-    note: "GLM-4 / GLM-4-Flash（免费模型）。新用户送 2M tokens。",
-    console: "https://open.bigmodel.cn",
-    yaml: `  - name: zhipu
-    label: 智谱 GLM
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "YOUR-KEY"
-    protocol: openai
-    models: [glm-4-plus, glm-4-flash]`,
-  },
-  {
-    id: "groq", label: "Groq", region: "intl",
-    note: "LPU 硬件超快（2000+ tok/s），免费额度每天 14.4k 请求。质量略逊 Claude/GPT。",
-    console: "https://console.groq.com",
-    yaml: `  - name: groq
-    label: Groq
-    base_url: "https://api.groq.com/openai/v1"
-    api_key: "gsk-YOUR-KEY"
-    protocol: openai
-    models: [llama-3.3-70b-versatile, deepseek-r1-distill-llama-70b]`,
-  },
-  {
-    id: "openrouter", label: "OpenRouter", region: "intl",
-    note: "一个 key 聚合 Claude / GPT / Gemini / Llama。部分 :free 模型零费用。",
-    console: "https://openrouter.ai",
-    yaml: `  - name: openrouter
-    label: OpenRouter
-    base_url: "https://openrouter.ai/api/v1"
-    api_key: "sk-or-YOUR-KEY"
-    protocol: openai
-    models:
-      - anthropic/claude-haiku-4.5
-      - google/gemini-2.0-flash-exp:free
-      - meta-llama/llama-3.3-70b-instruct:free`,
+    docUrl: "https://www.volcengine.com/product/doubao",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    protocol: "openai",
+    models: ["doubao-seed-1-6-250615", "doubao-seed-1-6-flash-250615"],
   },
   {
     id: "openai", label: "OpenAI", region: "intl",
-    note: "官方 API。gpt-4o-mini 便宜，gpt-4.1 / o4 质量顶。需付费，没免费额度。",
-    console: "https://platform.openai.com",
-    yaml: `  - name: openai
-    label: OpenAI
-    base_url: "https://api.openai.com/v1"
-    api_key: "sk-YOUR-KEY"
-    protocol: openai
-    models: [gpt-4o-mini, gpt-4.1, gpt-4.1-mini]`,
+    note: "官方 API。gpt-4o-mini 便宜，gpt-4.1 / o4 质量顶。无免费额度。",
+    docUrl: "https://platform.openai.com",
+    base_url: "https://api.openai.com/v1",
+    protocol: "openai",
+    models: ["gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"],
   },
   {
-    id: "gemini-openai", label: "Gemini (OpenAI 兼容模式)", region: "intl",
-    note: "Google AI Studio 的 OpenAI 兼容端点，免费层每分钟有限调用次数。",
-    console: "https://aistudio.google.com/apikey",
-    yaml: `  - name: gemini
-    label: Gemini
-    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
-    api_key: "YOUR-GEMINI-KEY"
-    protocol: openai
-    models: [gemini-2.5-flash, gemini-2.5-flash-lite]`,
+    id: "ollama", label: "Ollama（本地，零成本）", region: "local", freeTier: true,
+    note: "本机跑开源模型，离线、无 API 费用。需要先 `ollama pull qwen2.5`。",
+    docUrl: "https://ollama.com",
+    base_url: "http://localhost:11434/v1",
+    protocol: "openai",
+    models: ["qwen2.5:7b", "qwen2.5:14b", "llama3.3"],
   },
   {
-    id: "ollama", label: "Ollama（本地）", region: "local",
-    note: "本机跑开源模型，无 API 费用，完全离线。需要先 `ollama pull qwen2.5`。",
-    console: "https://ollama.com",
-    yaml: `  - name: ollama-local
-    label: 本地 Ollama
-    base_url: "http://localhost:11434/v1"
-    api_key: ""
-    protocol: openai
-    models: [qwen2.5:7b, qwen2.5:14b, llama3.3]`,
+    id: "vllm", label: "vLLM / LM Studio（本地）", region: "local", freeTier: true,
+    note: "自己起 OpenAI 兼容服务（vLLM / llama.cpp / LM Studio）。",
+    docUrl: "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html",
+    base_url: "http://localhost:8000/v1",
+    protocol: "openai",
+    models: [],
   },
   {
-    id: "vllm", label: "vLLM / LM Studio（本地）", region: "local",
-    note: "自己起 OpenAI 兼容服务（vLLM / llama.cpp / LM Studio），适合自定义模型。",
-    console: "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html",
-    yaml: `  - name: local
-    label: 本地 vLLM
-    base_url: "http://localhost:8000/v1"
-    api_key: ""
-    protocol: openai
-    models: [your-local-model-name]`,
+    id: "custom", label: "自定义（OpenAI 兼容）", region: "intl",
+    note: "任何 /chat/completions 兼容端点。",
+    docUrl: "",
+    base_url: "",
+    protocol: "openai",
+    models: [],
   },
 ];
 
-function renderFreeProviderCatalog() {
-  const host = $("#freeProviders");
+/* ── Provider management UI ───────────────────────────────────────────── */
+
+function regionTag(r) { return r === "cn" ? "国内" : r === "local" ? "本地" : "海外"; }
+
+function populateProviderTemplateDropdown() {
+  const sel = $("#providerTemplate");
+  sel.innerHTML = '<option value="">— 选择服务商 —</option>';
+  // Free first, then paid/intl, then custom.
+  const groups = [
+    ["免费或有免费层", PROVIDER_CATALOG.filter(p => p.freeTier)],
+    ["付费 / 其他",   PROVIDER_CATALOG.filter(p => !p.freeTier && p.id !== "custom")],
+    ["自定义",        PROVIDER_CATALOG.filter(p => p.id === "custom")],
+  ];
+  for (const [title, items] of groups) {
+    if (!items.length) continue;
+    const g = document.createElement("optgroup"); g.label = title;
+    for (const p of items) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = `${p.label} · ${regionTag(p.region)}`;
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  }
+}
+
+function openProviderForm(template) {
+  const form = $("#providerForm");
+  $("#pfLabel").value = template.label;
+  $("#pfName").value = template.id === "custom" ? "" : template.id;
+  $("#pfName").disabled = false;
+  $("#pfApiKey").value = "";
+  $("#pfApiKey").type = "password";
+  $("#pfToggleKey").textContent = "显示";
+  $("#pfBaseUrl").value = template.base_url;
+  $("#pfModels").value = (template.models || []).join("\n");
+  const link = $("#pfDocLink");
+  if (template.docUrl) { link.href = template.docUrl; link.textContent = "获取 API Key ↗"; link.hidden = false; }
+  else link.hidden = true;
+  $("#pfResult").textContent = "";
+  form.dataset.editing = "";
+  form.hidden = false;
+}
+
+function openProviderFormForEdit(provider) {
+  const form = $("#providerForm");
+  $("#pfLabel").value = provider.label || provider.name;
+  $("#pfName").value = provider.name;
+  $("#pfName").disabled = true;  // name is the key, can't rename without delete+re-add
+  $("#pfApiKey").value = "";     // not returned by server; user re-enters only if changing
+  $("#pfApiKey").placeholder = provider.has_api_key ? "（已设置，不动则保留）" : "sk-...";
+  $("#pfApiKey").type = "password";
+  $("#pfToggleKey").textContent = "显示";
+  $("#pfBaseUrl").value = provider.base_url;
+  $("#pfModels").value = (provider.models || []).join("\n");
+  $("#pfDocLink").hidden = true;
+  $("#pfResult").textContent = "";
+  form.dataset.editing = provider.name;
+  form.hidden = false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function closeProviderForm() {
+  $("#providerForm").hidden = true;
+  $("#providerTemplate").value = "";
+  $("#pfName").disabled = false;
+}
+
+function readProviderForm() {
+  return {
+    name: $("#pfName").value.trim(),
+    label: $("#pfLabel").value.trim(),
+    base_url: $("#pfBaseUrl").value.trim(),
+    api_key: $("#pfApiKey").value,
+    protocol: "openai",
+    models: $("#pfModels").value.split("\n").map(s => s.trim()).filter(Boolean),
+    enabled: true,
+  };
+}
+
+async function refreshProviderList() {
+  const host = $("#providerList");
   if (!host) return;
-  host.innerHTML = FREE_PROVIDER_CATALOG.map((p) => `
-    <div class="free-prov" data-id="${escHtml(p.id)}">
-      <div class="free-prov-head">
-        <span class="free-prov-title">${escHtml(p.label)}</span>
-        <span class="free-prov-region region-${p.region}">${
-          p.region === "cn" ? "国内" : p.region === "local" ? "本地" : "海外"
-        }</span>
-        <a class="free-prov-link" target="_blank" rel="noopener" href="${escHtml(p.console)}">控制台 ↗</a>
-        <button type="button" class="free-prov-copy" data-id="${escHtml(p.id)}">复制 YAML</button>
+  try {
+    const r = await serverFetch("/providers");
+    const j = await r.json();
+    const rows = j.providers || [];
+    if (!rows.length) {
+      host.innerHTML = `<em class="hint">还没有服务商，选一个添加。</em>`;
+      return;
+    }
+    host.innerHTML = rows.map(p => `
+      <div class="prov-row" data-name="${escHtml(p.name)}">
+        <div class="prov-row-main">
+          <span class="prov-row-title">${escHtml(p.label)}</span>
+          <span class="prov-row-src ${p.source === "config" ? "src-config" : "src-user"}">${
+            p.source === "config" ? "config.yaml" : "用户添加"
+          }</span>
+          ${p.has_api_key ? '<span class="prov-row-src">🔑</span>' : ''}
+        </div>
+        <div class="prov-row-sub">
+          <code>${escHtml(p.base_url)}</code>
+          · ${p.models.length} 个模型
+        </div>
+        <div class="prov-row-actions">
+          ${p.source === "user" ? `
+            <button type="button" class="btn-mini" data-act="edit">编辑</button>
+            <button type="button" class="btn-mini danger" data-act="delete">删除</button>
+          ` : `<span class="hint">config.yaml 管理</span>`}
+        </div>
       </div>
-      <div class="free-prov-note">${escHtml(p.note)}</div>
-      <pre class="free-prov-yaml">${escHtml(p.yaml)}</pre>
-    </div>
-  `).join("");
-  host.querySelectorAll(".free-prov-copy").forEach((b) => {
-    b.addEventListener("click", async () => {
-      const p = FREE_PROVIDER_CATALOG.find((x) => x.id === b.dataset.id);
-      try {
-        await navigator.clipboard.writeText(p.yaml + "\n");
-        b.textContent = "已复制 ✓";
-        setTimeout(() => (b.textContent = "复制 YAML"), 1500);
-      } catch {
-        b.textContent = "复制失败";
-      }
+    `).join("");
+    host.querySelectorAll(".prov-row").forEach(row => {
+      row.addEventListener("click", async (ev) => {
+        const b = ev.target.closest("button");
+        if (!b) return;
+        const name = row.dataset.name;
+        const provider = rows.find(x => x.name === name);
+        if (b.dataset.act === "edit" && provider) openProviderFormForEdit(provider);
+        else if (b.dataset.act === "delete" && provider) {
+          if (!confirm(`删除服务商 "${provider.label}"？`)) return;
+          await serverFetch(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+          await refreshProviderList();
+        }
+      });
     });
+  } catch (e) {
+    host.innerHTML = `<em class="hint">加载失败：${escHtml(String(e?.message || e))}</em>`;
+  }
+}
+
+function wireProviderForm() {
+  populateProviderTemplateDropdown();
+  $("#providerTemplate").addEventListener("change", (e) => {
+    const id = e.target.value;
+    if (!id) { closeProviderForm(); return; }
+    const tpl = PROVIDER_CATALOG.find(p => p.id === id);
+    if (tpl) openProviderForm(tpl);
+  });
+  $("#pfCancel").addEventListener("click", closeProviderForm);
+  $("#pfToggleKey").addEventListener("click", () => {
+    const input = $("#pfApiKey");
+    const showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    $("#pfToggleKey").textContent = showing ? "显示" : "隐藏";
+  });
+  $("#pfTest").addEventListener("click", async () => {
+    const body = readProviderForm();
+    if (!body.base_url || !body.models.length) {
+      $("#pfResult").textContent = "缺 base_url 或模型列表";
+      return;
+    }
+    $("#pfResult").textContent = "测试中…";
+    try {
+      const r = await serverFetch("/providers/test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json();
+      if (j.ok) $("#pfResult").textContent = `✓ ${j.latency_ms}ms · ${j.sample}`;
+      else $("#pfResult").textContent = `✗ ${j.error}`;
+    } catch (e) {
+      $("#pfResult").textContent = `✗ ${e?.message || e}`;
+    }
+  });
+  $("#pfSave").addEventListener("click", async () => {
+    const body = readProviderForm();
+    if (!body.name || !body.base_url) {
+      $("#pfResult").textContent = "name 和 base_url 必填";
+      return;
+    }
+    if (!body.models.length) {
+      $("#pfResult").textContent = "至少一个模型";
+      return;
+    }
+    // Keep existing api_key on edit if field is blank — server doesn't return it, so
+    // an empty value would wipe the saved key. Skip the PATCH by setting enabled.
+    const editing = $("#providerForm").dataset.editing;
+    if (editing && !body.api_key) {
+      // Fetch current provider to retain its api_key — the only way we can here is to
+      // temporarily send "". Server's upsert will overwrite. So require re-entry in UI.
+      $("#pfResult").textContent = "编辑时 API Key 必填（之前的值不会返回）";
+      return;
+    }
+    $("#pfResult").textContent = "保存中…";
+    try {
+      const r = await serverFetch("/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({ detail: r.statusText }));
+        $("#pfResult").textContent = `✗ ${j.detail || "保存失败"}`;
+        return;
+      }
+      $("#pfResult").textContent = "✓ 已保存";
+      closeProviderForm();
+      await refreshProviderList();
+      await refreshServer();   // re-pull /config so the model dropdown includes the new provider
+    } catch (e) {
+      $("#pfResult").textContent = `✗ ${e?.message || e}`;
+    }
   });
 }
 
@@ -294,7 +458,7 @@ async function refreshServer() {
     }
   } catch { /* already surfaced via health dot */ }
   refreshProviderStats();
-  renderFreeProviderCatalog();
+  refreshProviderList();
   try {
     const r = await serverFetch("/asr/health");
     const j = await r.json();
@@ -355,6 +519,7 @@ $("#reload-ext").addEventListener("click", () => {
 /* ── boot ─────────────────────────────────────────────────────── */
 (async () => {
   await loadPrefs();
+  wireProviderForm();
   const m = chrome.runtime.getManifest();
   $("#extInfo").textContent = `${m.name} v${m.version}`;
   refreshServer();

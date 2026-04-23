@@ -10,8 +10,9 @@ from json import loads as json_loads
 import httpx
 
 from .cache import Cache, glossary_fingerprint
-from .config import Config
+from .config import Config, ProviderCfg
 from .prompts import build_messages, format_batch, parse_batch
+from .providers_store import ProvidersStore
 from .stats import StatsStore
 
 log = logging.getLogger(__name__)
@@ -51,14 +52,61 @@ class TranslateResult:
 
 
 class Translator:
-    def __init__(self, cfg: Config, cache: Cache, stats: StatsStore | None = None):
+    def __init__(self, cfg: Config, cache: Cache, stats: StatsStore | None = None,
+                 providers_store: ProvidersStore | None = None):
         self.cfg = cfg
         self.cache = cache
         self.stats = stats
-        # One httpx client per provider — different base_url, different auth,
-        # different timeout budget.
+        self.providers_store = providers_store
+        # One httpx client per provider (keyed by name). Populated lazily on first
+        # use of each provider, and rebuilt by reload_providers() when the user
+        # adds / edits / deletes one at runtime.
         self._clients: dict[str, httpx.AsyncClient] = {}
-        for p in cfg.providers:
+        self._ensure_clients(self.all_providers())
+        self._default_sem = asyncio.Semaphore(cfg.defaults.concurrency)
+        # Per-model semaphores so one slow model's queue doesn't starve another.
+        self._model_sems: dict[str, asyncio.Semaphore] = {}
+        for name, tuning in (cfg.defaults.per_model or {}).items():
+            self._model_sems[name] = asyncio.Semaphore(tuning.concurrency)
+
+    def all_providers(self) -> list[ProviderCfg]:
+        """config.yaml providers first (they win on name collision), then
+        user-added ones from the persistent store. Callers treat this as the
+        authoritative list."""
+        out = list(self.cfg.providers)
+        seen = {p.name for p in out}
+        if self.providers_store is not None:
+            for p in self.providers_store.list():
+                if p.name not in seen:
+                    out.append(p)
+                    seen.add(p.name)
+        return out
+
+    def find_provider(self, name: str) -> ProviderCfg | None:
+        for p in self.all_providers():
+            if p.name == name:
+                return p
+        return None
+
+    def resolve_model(self, model: str | None) -> tuple[ProviderCfg, str]:
+        """Replace Config.resolve_model so the runtime view (config + user
+        providers) is consulted, not just the static config."""
+        providers = self.all_providers()
+        default = providers[0]
+        if not model:
+            return default, self.cfg.defaults.model.split(":", 1)[-1]
+        if ":" in model:
+            prefix, rest = model.split(":", 1)
+            for p in providers:
+                if p.name == prefix and p.enabled:
+                    return p, rest
+        return default, model
+
+    def _ensure_clients(self, providers: list[ProviderCfg]) -> None:
+        """Create an httpx client for each provider that doesn't already have one."""
+        for p in providers:
+            if p.name in self._clients:
+                continue
             headers = {}
             if p.api_key:
                 headers["Authorization"] = f"Bearer {p.api_key}"
@@ -67,11 +115,30 @@ class Translator:
                 timeout=p.timeout_s,
                 headers=headers,
             )
-        self._default_sem = asyncio.Semaphore(cfg.defaults.concurrency)
-        # Per-model semaphores so one slow model's queue doesn't starve another.
-        self._model_sems: dict[str, asyncio.Semaphore] = {}
-        for name, tuning in (cfg.defaults.per_model or {}).items():
-            self._model_sems[name] = asyncio.Semaphore(tuning.concurrency)
+
+    async def reload_providers(self) -> None:
+        """Called after the user store mutates. Create new clients, close
+        retired ones. Doesn't interrupt in-flight requests — each request
+        holds its own reference to the client it started with."""
+        live = self.all_providers()
+        live_names = {p.name for p in live}
+        # Close any httpx client whose provider was removed or renamed.
+        gone = [name for name in self._clients if name not in live_names]
+        for name in gone:
+            try:
+                await self._clients[name].aclose()
+            except Exception:
+                pass
+            self._clients.pop(name, None)
+        # Close + recreate clients whose base_url/api_key changed.
+        for p in live:
+            existing = self._clients.get(p.name)
+            if existing is None:
+                continue
+            if str(existing.base_url).rstrip("/") != p.base_url.rstrip("/"):
+                await existing.aclose()
+                del self._clients[p.name]
+        self._ensure_clients(live)
 
     def _tuning_for(self, model: str) -> tuple[int, asyncio.Semaphore]:
         """Return (batch_size, semaphore) for the given model (after prefix
@@ -92,7 +159,7 @@ class Translator:
         if not texts:
             return texts
         mdl_in = model or self.cfg.defaults.model
-        provider, mdl = self.cfg.resolve_model(mdl_in)
+        provider, mdl = self.resolve_model(mdl_in)
         sys = POLISH_SYSTEM.format(language=language)
         body = {
             "model": mdl,
@@ -353,7 +420,7 @@ class Translator:
         it's also REQUIRED for gpt-5.x reasoning models, since ccpa non-stream
         drops visible content while stream exposes it via delta chunks.
         """
-        provider, mdl_name = self.cfg.resolve_model(model)
+        provider, mdl_name = self.resolve_model(model)
         msgs, resolved_topic, topic_reason = build_messages(
             texts, target_lang=target, site=site, topic=topic, glossary=glossary,
             contexts=contexts,
