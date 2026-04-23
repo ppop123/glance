@@ -124,6 +124,26 @@
   content: "" !important;
 }
 
+/* Error state — raised whenever any item in the batch failed. Red dot
+   replaces the spinner + warm-red tint on the text so the user actually
+   notices the "done with failures" case (was previously indistinguishable
+   from a clean done — upstream 500 → silent "translated" label). */
+.fanyi-progress.fanyi-progress-err .fanyi-progress-spin {
+  border: 0 !important;
+  background: #e5484d !important;
+  animation: none !important;
+  box-shadow: 0 0 0 3px rgba(229, 72, 77, 0.18) !important;
+}
+.fanyi-progress.fanyi-progress-err .fanyi-progress-spin::after {
+  content: "" !important;
+}
+.fanyi-progress.fanyi-progress-err .fanyi-progress-text {
+  color: #e5484d !important;
+}
+.fanyi-progress.fanyi-progress-err:hover .fanyi-progress-text {
+  color: #ff6b6f !important;
+}
+
 /* ============================================================
    2. FLOATING ACTION BUTTON
    ============================================================ */
