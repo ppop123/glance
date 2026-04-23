@@ -12,17 +12,33 @@ function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ""; }
 }
 
+/* ── hero toggle rendering ──────────────────────────────────────── */
+
+function renderToggle(on, { ready = true } = {}) {
+  const btn = $("#toggle");
+  const primary = btn.querySelector(".primary");
+  const secLabel = btn.querySelector(".sec-label");
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.classList.toggle("on", !!on);
+  btn.classList.toggle("unavailable", !ready);
+  if (!ready) {
+    primary.textContent = "此页面不支持翻译";
+    secLabel.textContent = "";
+    return;
+  }
+  primary.textContent = on ? primary.dataset.on : primary.dataset.off;
+  secLabel.textContent = on ? "" : "快捷键";
+}
+
 /* ── tab status / toggle ─────────────────────────────────────────── */
 
 async function refreshStatus() {
   const tab = await currentTab();
   const host = hostOf(tab?.url || "");
-  $("#siteName").textContent = host || "—";
+  $("#host").textContent = host || "—";
 
   if (!tab?.id || !/^https?:/.test(tab.url || "")) {
-    $("#toggleState").textContent = "不可用";
-    $("#toggleHint").textContent = "此页面不支持翻译";
-    $("#toggle").setAttribute("aria-pressed", "false");
+    renderToggle(false, { ready: false });
     $("#autoSite").disabled = true;
     return;
   }
@@ -31,9 +47,7 @@ async function refreshStatus() {
     await chrome.tabs.sendMessage(tab.id, { type: "fanyi:ensure-loaded" });
     const s = await chrome.tabs.sendMessage(tab.id, { type: "fanyi:status" });
     const on = !!s?.enabled;
-    $("#toggleState").textContent = on ? "翻译中" : "未翻译";
-    $("#toggleHint").textContent  = on ? "点击关闭 · ⌥A" : "点击翻译此页 · ⌥A";
-    $("#toggle").setAttribute("aria-pressed", on ? "true" : "false");
+    renderToggle(on);
 
     const site = s?.site || host;
     const { autoSites = [] } = await chrome.storage.sync.get({ autoSites: [] });
@@ -41,16 +55,12 @@ async function refreshStatus() {
     $("#autoSite").dataset.site = site;
     $("#autoSite").disabled = false;
   } catch {
-    $("#toggleState").textContent = "—";
-    $("#toggleHint").textContent = "页面未就绪，请刷新";
+    renderToggle(false, { ready: false });
   }
 }
 
 /* ── server status & config sync ─────────────────────────────────── */
 
-// Keep the providers list in module scope — the provider <select>'s change
-// handler needs to look up models for the selected name without another
-// /config roundtrip.
 let _providers = [];
 
 async function refreshServer() {
@@ -58,22 +68,27 @@ async function refreshServer() {
   try {
     const c = await getConfig();
     dot.className = "dot ok";
-    $("#serverText").textContent = `${c.default_model} → ${c.default_target}`;
+    $("#serverText").innerHTML = `<code>${escHtml(c.default_model)}</code> → <code>${escHtml(c.default_target)}</code>`;
     _providers = c.providers || [];
     const prefs = await chrome.storage.sync.get({ model: null, targetLang: null });
     populateProviderAndModel(prefs.model || c.default_model);
     $("#targetLang").value = prefs.targetLang || c.default_target;
-  } catch (e) {
+  } catch {
     dot.className = "dot err";
     $("#serverText").textContent = "服务器连接失败";
   }
   try {
     const s = await getCacheStats();
-    const size = s.entries.toLocaleString();
-    $("#cacheText").textContent = `缓存：${size} 条 · v${s.glossary_version}`;
+    $("#cache-count").textContent = (s.entries || 0).toLocaleString();
+    $("#cache-ver").textContent = `v${s.glossary_version}`;
   } catch {
-    $("#cacheText").textContent = "缓存：—";
+    $("#cache-count").textContent = "—";
+    $("#cache-ver").textContent = "";
   }
+}
+
+function escHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 /* ── handlers ────────────────────────────────────────────────────── */
@@ -127,6 +142,20 @@ $("#dev-reload").addEventListener("click", async () => {
 });
 
 $("#open-options").addEventListener("click", () => chrome.runtime.openOptionsPage?.());
+$("#open-options-top")?.addEventListener("click", () => chrome.runtime.openOptionsPage?.());
+
+// Advanced disclosure: reveals the server URL input.
+$("#adv-toggle").addEventListener("click", () => {
+  const panel = $("#adv-panel");
+  const open = panel.classList.toggle("open");
+  $("#adv-toggle").setAttribute("aria-expanded", String(open));
+});
+
+// Live sub-status label reflecting the seconds input.
+$("#subSeconds").addEventListener("input", () => {
+  const n = Math.max(5, Math.min(600, Number($("#subSeconds").value) || 60));
+  $("#sub-status").innerHTML = `<span>准备就绪 · 点击开始将转录当前视频的前 ${n} 秒</span>`;
+});
 
 $("#sub-go").addEventListener("click", async () => {
   const tab = await currentTab();
@@ -134,23 +163,21 @@ $("#sub-go").addEventListener("click", async () => {
   const seconds = Math.max(5, parseInt($("#subSeconds").value || "60", 10));
   const translate = $("#subTranslate").checked;
   const targetLang = $("#targetLang").value || "zh-CN";
-  $("#sub-status").textContent = "已启动 · 请看视频右上角";
+  $("#sub-status").innerHTML = "<span>已启动 · 请看视频右上角</span>";
   try {
     await chrome.tabs.sendMessage(tab.id, { type: "fanyi:ensure-loaded" });
     const r = await chrome.tabs.sendMessage(tab.id, {
       type: "fanyi:transcribe-video",
       opts: { maxSeconds: seconds, translate, targetLang, showToast: true },
     });
-    if (r?.ok) $("#sub-status").textContent = `✓ 已生成 ${r.cues} 条字幕`;
-    else $("#sub-status").textContent = `✗ ${r?.err || "失败"}`;
+    if (r?.ok) $("#sub-status").innerHTML = `<span>✓ 已生成 ${r.cues} 条字幕</span>`;
+    else $("#sub-status").innerHTML = `<span>✗ ${escHtml(r?.err || "失败")}</span>`;
   } catch (e) {
-    $("#sub-status").textContent = `✗ ${e?.message || e}`;
+    $("#sub-status").innerHTML = `<span>✗ ${escHtml(e?.message || String(e))}</span>`;
   }
 });
 
-/** Populate the provider + model dropdowns. `desired` is a "provider:model"
- * or bare model name — we resolve it to the matching provider row and set
- * both selects together. Changing provider re-scopes the model list. */
+/** Populate provider + model selects from the server's /config list. */
 function populateProviderAndModel(desired) {
   const provSel = $("#provider");
   provSel.innerHTML = "";
@@ -160,9 +187,8 @@ function populateProviderAndModel(desired) {
     o.textContent = p.label || p.name;
     provSel.appendChild(o);
   }
-  // Pick the provider matching `desired` if possible, else first.
   const [wantedProv, wantedModel] = (desired || "").split(":");
-  const pickedProv = _providers.find(p => p.name === wantedProv) || _providers[0];
+  const pickedProv = _providers.find((p) => p.name === wantedProv) || _providers[0];
   if (pickedProv) provSel.value = pickedProv.name;
   renderModelsForProvider(pickedProv, wantedModel || (desired && !desired.includes(":") ? desired : null));
 }
@@ -177,7 +203,6 @@ function renderModelsForProvider(provider, desiredModel) {
     o.textContent = m;
     mSel.appendChild(o);
   }
-  // Prefer requested model; else first.
   if (desiredModel) {
     const hit = Array.from(mSel.querySelectorAll("option")).find(
       (o) => o.value === `${provider.name}:${desiredModel}` || o.value.endsWith(":" + desiredModel)
@@ -196,6 +221,7 @@ async function getServerUrl() {
 (async () => {
   const { serverUrl = DEFAULT_URL } = await chrome.storage.sync.get({ serverUrl: DEFAULT_URL });
   $("#serverUrl").value = serverUrl;
+  renderToggle(false);
   refreshStatus();
   refreshServer();
 })();

@@ -2,78 +2,135 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>翻译</title>
+  <title>glance</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header class="hdr">
-    <div class="brand">
-      <div class="logo">文</div>
-      <div class="title">翻译</div>
-    </div>
-    <button class="icon-btn" id="open-options" title="设置">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-    </button>
-  </header>
+  <div class="popup">
+    <header class="header">
+      <div class="logo" aria-hidden="true">文</div>
+      <div class="title">翻译<span class="en">glance</span></div>
+      <div class="spacer"></div>
+      <button class="icon-btn" id="open-options-top" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </header>
 
-  <section class="hero" id="hero">
-    <button class="toggle" id="toggle" aria-pressed="false">
-      <div class="toggle-state" id="toggleState">…</div>
-      <div class="toggle-hint" id="toggleHint">⌥A · 翻译当前页面</div>
+    <button class="hero" id="toggle" aria-pressed="false">
+      <span class="primary" data-off="翻译此页" data-on="翻译中 · 点击关闭">翻译此页</span>
+      <span class="secondary">
+        <span class="kbd">⌥A</span><span class="sec-label">快捷键</span>
+      </span>
     </button>
+
     <div class="site-row">
-      <span class="site-name" id="siteName">加载中…</span>
-      <label class="chk">
+      <span class="host"><span class="favicon"></span><b id="host">—</b></span>
+      <span class="spacer"></span>
+      <span class="label">自动翻译此网站</span>
+      <label class="switch">
         <input type="checkbox" id="autoSite">
-        <span>自动翻译此网站</span>
+        <span class="track"></span>
       </label>
     </div>
-  </section>
 
-  <section class="card">
-    <div class="card-title">翻译服务</div>
-    <div class="kv-grid">
-      <label>目标语言</label>
-      <select id="targetLang">
-        <option value="zh-CN">中文（简体）</option>
-        <option value="zh-TW">中文（繁體）</option>
-      </select>
-      <label>服务商</label>
-      <select id="provider"></select>
-      <label>模型</label>
-      <select id="model"></select>
-    </div>
-    <div class="kv">
-      <span class="dot" id="serverDot"></span>
-      <span id="serverText">正在检查服务器…</span>
-    </div>
-  </section>
+    <section class="card" aria-labelledby="card-translate">
+      <div class="card-head">
+        <div class="card-title" id="card-translate">翻译服务</div>
+      </div>
 
-  <section class="card">
-    <div class="card-title">视频字幕 <span class="pill">无字幕视频转录</span></div>
-    <div class="sub-row">
-      <label>时长</label>
-      <input type="number" id="subSeconds" value="60" min="5" max="600">
-      <span>秒</span>
-      <button class="btn primary" id="sub-go">开始转录</button>
-    </div>
-    <label class="chk">
-      <input type="checkbox" id="subTranslate" checked>
-      <span>同时翻译字幕（双语）</span>
-    </label>
-    <div class="sub-status" id="sub-status"></div>
-  </section>
+      <div class="field">
+        <span class="label">目标语言</span>
+        <div class="control">
+          <select id="targetLang">
+            <option value="zh-CN">中文（简体）</option>
+            <option value="zh-TW">中文（繁體）</option>
+          </select>
+        </div>
+      </div>
 
-  <footer class="ftr">
-    <div class="kv"><span id="cacheText">缓存：—</span></div>
-    <div class="ftr-actions">
-      <button class="link-btn" id="clear" title="清空翻译缓存">清空缓存</button>
-      <button class="link-btn" id="dev-reload" title="重新加载扩展">重载扩展</button>
-    </div>
-    <div class="server-input">
-      <input id="serverUrl" type="text" placeholder="http://127.0.0.1:8787">
-    </div>
-  </footer>
+      <div class="field">
+        <span class="label">服务商</span>
+        <div class="control">
+          <select id="provider"></select>
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="label">模型</span>
+        <div class="control">
+          <select id="model"></select>
+        </div>
+      </div>
+
+      <div class="status">
+        <span class="dot" id="serverDot" aria-hidden="true"></span>
+        <span id="serverText">正在检查服务器…</span>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="card-sub">
+      <div class="card-head">
+        <div class="card-title" id="card-sub">视频字幕</div>
+        <div class="card-subtitle">无字幕视频转录</div>
+      </div>
+
+      <div class="sub-row">
+        <input type="number" id="subSeconds" min="5" max="600" step="5" value="60" aria-label="秒">
+        <span class="unit">秒</span>
+        <button class="btn primary" id="sub-go">开始转录</button>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="subTranslate" checked>
+        <span class="box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span>生成双语字幕（原文 + 译文）</span>
+      </label>
+
+      <div class="status" id="sub-status">
+        <span>准备就绪 · 点击开始将转录当前视频的前 60 秒</span>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="cache">
+        <span>缓存</span>
+        <span class="count" id="cache-count">—</span>
+        <span>条</span>
+        <div class="meter" aria-hidden="true"><span></span></div>
+        <span class="ver" id="cache-ver"></span>
+      </div>
+
+      <div class="footer-actions">
+        <button class="round" id="clear" title="清空缓存" aria-label="清空缓存">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
+        </button>
+        <button class="round" id="dev-reload" title="重载扩展" aria-label="重载扩展">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <button class="round" id="open-options" title="打开完整设置" aria-label="打开完整设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        </button>
+
+        <span class="spacer"></span>
+
+        <button class="disclosure-btn" id="adv-toggle" aria-expanded="false" aria-controls="adv-panel">
+          <span class="chev">›</span>
+          <span>⚙ 高级</span>
+        </button>
+      </div>
+
+      <div class="advanced" id="adv-panel">
+        <div class="inner">
+          <div class="inner-pad">
+            <label for="serverUrl">服务器地址</label>
+            <input type="text" id="serverUrl" placeholder="http://127.0.0.1:8787">
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
 
   <script type="module" src="popup.js"></script>
 </body>
