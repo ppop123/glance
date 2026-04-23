@@ -594,9 +594,17 @@ function fabToggleMenu() {
   }
   const host = location.hostname.toLowerCase();
   const isAuto = (state._autoSites || []).includes(host);
+  // Video subtitle entry — only shown when the current page actually has a
+  // primary <video>, so YouTube / Bilibili / embedded players get it but a
+  // plain article doesn't clutter the menu with a useless button.
+  const hasVideo = !!pickPrimaryVideo();
+  const subtitleRow = hasVideo
+    ? `<button data-act="subtitle">生成字幕</button>`
+    : "";
   fabMenuEl.innerHTML = `
     <button data-act="toggle">${state.enabled ? "关闭翻译" : "翻译此页"}</button>
     <button data-act="auto">${isAuto ? "不再自动翻译本站" : "始终自动翻译本站"}</button>
+    ${subtitleRow}
     <button data-act="options">设置…</button>
     <button data-act="hide">隐藏悬浮球</button>
   `;
@@ -621,6 +629,24 @@ async function fabOnMenuClick(ev) {
     if (next.includes(host) && !state.enabled) { await enable(); fabRender(); }
   }
   if (act === "options") { chrome.runtime.sendMessage({ type: "fanyi:open-options" }).catch(() => chrome.runtime.openOptionsPage?.()); }
+  if (act === "subtitle") {
+    // Pull the user's subtitle defaults (set in options page) so behavior
+    // matches their preferences. Fallback to baked-in defaults.
+    const prefs = await chrome.storage.sync.get({
+      subDefaultSeconds: 60,
+      subBilingual: true,
+      subPreferDownload: true,
+      targetLang: DEFAULT_TARGET,
+    }).catch(() => ({}));
+    runTranscribe({
+      maxSeconds: Math.max(5, parseInt(prefs.subDefaultSeconds || 60, 10)),
+      translate: !!prefs.subBilingual,
+      targetLang: prefs.targetLang || DEFAULT_TARGET,
+      preferDownload: prefs.subPreferDownload !== false,
+      sourceUrl: location.href,
+      showToast: true,
+    }, () => { /* no-op; subtitle.js shows its own toast */ });
+  }
   if (act === "hide") {
     await chrome.storage.sync.set({ showFab: false });
     fabRemove();
@@ -696,18 +722,40 @@ export async function boot() {
   state.showFab = prefs.showFab !== false;  // default on; user can hide via FAB menu
   applyTranslationFont(prefs.translationFont || "");
 
-  // Re-read on the fly when user changes settings in popup.
+  // Re-read on the fly when user changes settings in popup. Coalesce
+  // retranslate calls on a short timer so simultaneous multi-key updates
+  // (e.g. user changing provider + glossary in one popup action) don't fire
+  // two competing scans back-to-back.
+  let retransTimer = null;
+  const scheduleRetranslate = () => {
+    if (retransTimer) clearTimeout(retransTimer);
+    retransTimer = setTimeout(() => {
+      retransTimer = null;
+      retranslate().catch((e) => console.warn("[fanyi] retranslate failed", e));
+    }, 150);
+  };
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "sync") return;
-    if (changes.targetLang) state.target = changes.targetLang.newValue || DEFAULT_TARGET;
-    if (changes.model)      state.model  = changes.model.newValue || null;
-    if (changes.glossary)   state.glossary = Array.isArray(changes.glossary.newValue) && changes.glossary.newValue.length ? changes.glossary.newValue : null;
+    let needsRetranslate = false;
+    if (changes.targetLang) {
+      state.target = changes.targetLang.newValue || DEFAULT_TARGET;
+      needsRetranslate = true;
+    }
+    if (changes.model) {
+      state.model = changes.model.newValue || null;
+      needsRetranslate = true;
+    }
+    if (changes.glossary) {
+      state.glossary = Array.isArray(changes.glossary.newValue) && changes.glossary.newValue.length ? changes.glossary.newValue : null;
+      needsRetranslate = true;
+    }
     if (changes.showFab) {
       state.showFab = changes.showFab.newValue !== false;
       if (state.showFab) fabInstall();
       else fabRemove();
     }
     if (changes.translationFont) applyTranslationFont(changes.translationFont.newValue || "");
+    if (needsRetranslate && state.enabled) scheduleRetranslate();
   });
 
   console.info("[fanyi] boot: adapter=%s site=%s target=%s model=%s auto=%o", state.adapter.name, state.site, state.target, state.model || "(default)", autoSites);
@@ -758,4 +806,24 @@ export function disable() {
 export async function toggle() {
   if (state.enabled) disable();
   else await enable();
+}
+
+/** Wipe current translations and re-run an initial scan with whatever
+ * state.model / state.target / state.glossary hold. Used when the user
+ * changes provider / model / target language in the popup — the stale
+ * Chinese in the DOM would otherwise hide the fact that the new model
+ * is now active. Silently no-ops when translation is off. */
+export async function retranslate() {
+  if (!state.enabled) return;
+  for (const [, ac] of state.inflight) ac.abort();
+  state.inflight.clear();
+  removeAllTranslations();
+  pillReset();
+  const ad = state.adapter;
+  if (!ad) return;
+  const first = ad.discoverUnits();
+  console.info("[fanyi] retranslate: scan found %d units (model=%s target=%s)",
+    first.length, state.model || "(default)", state.target);
+  const sortedFirst = ad.prioritize ? ad.prioritize(first) : first;
+  translateUnits(sortedFirst);
 }

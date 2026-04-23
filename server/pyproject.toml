@@ -13,4 +13,7 @@ dependencies = [
 ]
 
 [tool.uv]
-dev-dependencies = ["pytest>=8"]
+dev-dependencies = [
+    "pytest>=8",
+    "pytest-asyncio>=1.3.0",
+]

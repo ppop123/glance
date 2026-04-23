@@ -18,6 +18,15 @@ from .stats import StatsStore
 log = logging.getLogger(__name__)
 
 
+class UnknownProviderError(ValueError):
+    """Raised when a `provider:model` string names a provider that doesn't
+    exist in our config + user store. Previously resolve_model silently fell
+    back to the default provider while keeping the bogus model string — that
+    leaked a garbage `model` field to the upstream, which correctly rejected
+    it with 400. Surface the error at our own /translate endpoint instead so
+    the extension can show the user what's wrong."""
+
+
 @dataclass
 class TranslateItem:
     text: str
@@ -100,6 +109,15 @@ class Translator:
             for p in providers:
                 if p.name == prefix and p.enabled:
                     return p, rest
+            # Prefix was explicit but matches no enabled provider. Fail loud
+            # instead of silently forwarding the prefixed model string to the
+            # default provider (which invariably 400s upstream and shows up as
+            # "provider is broken" in the UI).
+            known = ", ".join(sorted(p.name for p in providers if p.enabled)) or "(none)"
+            raise UnknownProviderError(
+                f"unknown provider prefix '{prefix}' in model '{model}'. "
+                f"Known providers: {known}"
+            )
         return default, model
 
     def _ensure_clients(self, providers: list[ProviderCfg]) -> None:
@@ -412,19 +430,63 @@ class Translator:
         glossary: list[tuple[str, str]] | None = None,
         contexts: list[str | None] | None = None,
     ) -> tuple[list[str | None], str | None, str]:
-        """Stream from the upstream and concatenate deltas.
+        """Dispatch to the user-chosen provider; on server / transport error,
+        fall back to other enabled providers in config order (each with their
+        first listed model). Client 4xx errors are re-raised immediately — the
+        request itself is malformed so the same payload will fail everywhere.
 
         `model` may be a plain name ("claude-haiku-4-5") or prefixed
         ("deepseek:deepseek-chat") — we split and route to the matching provider.
-        Streaming works for every OpenAI-compatible gateway we target today;
-        it's also REQUIRED for gpt-5.x reasoning models, since ccpa non-stream
-        drops visible content while stream exposes it via delta chunks.
         """
-        provider, mdl_name = self.resolve_model(model)
+        primary_provider, primary_mdl = self.resolve_model(model)
         msgs, resolved_topic, topic_reason = build_messages(
             texts, target_lang=target, site=site, topic=topic, glossary=glossary,
             contexts=contexts,
         )
+
+        attempts: list[tuple[ProviderCfg, str]] = [(primary_provider, primary_mdl)]
+        # Fallbacks: every OTHER enabled provider with at least one model.
+        for p in self.all_providers():
+            if p.name == primary_provider.name:
+                continue
+            if not p.enabled or not p.models:
+                continue
+            attempts.append((p, p.models[0]))
+
+        last_err: Exception | None = None
+        for i, (provider, mdl_name) in enumerate(attempts):
+            if i > 0:
+                log.warning(
+                    "failover: trying %s:%s after %s failed (%s)",
+                    provider.name, mdl_name, primary_provider.name, last_err,
+                )
+            try:
+                parsed = await self._dispatch_one(
+                    provider=provider, mdl_name=mdl_name,
+                    texts=texts, msgs=msgs,
+                )
+                if i > 0:
+                    log.info("failover: %s:%s succeeded", provider.name, mdl_name)
+                return parsed, resolved_topic, topic_reason
+            except httpx.HTTPStatusError as e:
+                # 4xx means the request itself is bad (bad model, bad body, bad
+                # key). Same payload elsewhere will fail the same way — stop.
+                if 400 <= e.response.status_code < 500:
+                    raise
+                last_err = e
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                # Network / timeout — worth trying another provider.
+                last_err = e
+        # Exhausted fallbacks.
+        assert last_err is not None
+        raise last_err
+
+    async def _dispatch_one(
+        self, *, provider: ProviderCfg, mdl_name: str,
+        texts: list[str], msgs: list[dict],
+    ) -> list[str | None]:
+        """Single-provider upstream call. Returns parsed per-item translations.
+        Raises httpx errors so the caller can decide whether to fail over."""
         body = {
             "model": mdl_name,
             "messages": msgs,
@@ -457,7 +519,6 @@ class Translator:
                         delta = None
                     if delta:
                         content_parts.append(delta)
-                    # Upstream usually attaches usage on the final chunk.
                     usage = data.get("usage") if isinstance(data, dict) else None
                     if usage:
                         tokens_in = int(usage.get("prompt_tokens") or 0) or tokens_in
@@ -476,4 +537,4 @@ class Translator:
         parsed = parse_batch(content, len(texts))
         if len(texts) == 1 and parsed[0] is None and content.strip():
             parsed[0] = content.strip()
-        return parsed, resolved_topic, topic_reason
+        return parsed

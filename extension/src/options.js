@@ -29,6 +29,7 @@ async function loadPrefs() {
   $("#glossary").value = (p.glossary || []).map(([src, dst]) => `${src} => ${dst}`).join("\n");
   $("#showFab").checked = p.showFab !== false;
   $("#translationFont").value = p.translationFont || "";
+  renderGlossaryStatus?.();
 }
 
 /** Fetch /providers/stats and render the table. Hidden gracefully if empty. */
@@ -43,11 +44,20 @@ async function refreshProviderStats() {
       host.innerHTML = `<em class="hint">还没有调用记录，去翻译一个页面再来看看。</em>`;
       return;
     }
+    const fmtCost = (v) => {
+      const c = Number(v || 0);
+      if (c === 0) return "—";
+      if (c < 0.01) return `<$0.01`;
+      return `$${c.toFixed(c < 1 ? 3 : 2)}`;
+    };
+    const totalCost = rows.reduce((s, r) => s + (r.cost_usd || 0), 0);
+    const totalIn = rows.reduce((s, r) => s + (r.tokens_in || 0), 0);
+    const totalOut = rows.reduce((s, r) => s + (r.tokens_out || 0), 0);
     host.innerHTML = `
       <table class="prov-table">
         <thead><tr>
           <th>服务商</th><th>模型</th><th>调用</th><th>成功率</th>
-          <th>平均延迟</th><th>输入 token</th><th>输出 token</th>
+          <th>平均延迟</th><th>输入 token</th><th>输出 token</th><th title="按公开单价粗估，仅供参考">估算费用</th>
         </tr></thead>
         <tbody>${rows.map(r => `
           <tr>
@@ -58,8 +68,16 @@ async function refreshProviderStats() {
             <td>${Math.round(r.avg_latency_ms)} ms</td>
             <td>${r.tokens_in.toLocaleString()}</td>
             <td>${r.tokens_out.toLocaleString()}</td>
-          </tr>`).join("")}</tbody>
-      </table>`;
+            <td>${fmtCost(r.cost_usd)}</td>
+          </tr>`).join("")}
+          <tr style="font-weight:600; border-top:2px solid var(--border)">
+            <td colspan="5">合计（近 30 天）</td>
+            <td>${totalIn.toLocaleString()}</td>
+            <td>${totalOut.toLocaleString()}</td>
+            <td>${fmtCost(totalCost)}</td>
+          </tr></tbody>
+      </table>
+      <p class="hint" style="margin-top:8px">费用按公开单价粗估（本地模型默认 0）。实际账单以各服务商为准。</p>`;
   } catch (e) {
     host.innerHTML = `<em class="hint">读取统计失败：${escHtml(String(e?.message || e))}</em>`;
   }
@@ -579,7 +597,42 @@ $("#autoSites").addEventListener("change", (e) => save("autoSites", parseAutoSit
 $("#subDefaultSeconds").addEventListener("change", (e) => save("subDefaultSeconds", Math.max(5, parseInt(e.target.value || "60", 10))));
 $("#subBilingual").addEventListener("change", (e) => save("subBilingual", e.target.checked));
 $("#subPreferDownload").addEventListener("change", (e) => save("subPreferDownload", e.target.checked));
-$("#glossary").addEventListener("change", (e) => save("glossary", parseGlossary(e.target.value)));
+/** Live glossary validation: count valid mappings, warn about malformed
+ * lines, reassure the user that what they typed is what the translator
+ * will actually receive. Previously there was no feedback at all and users
+ * couldn't tell whether their entries were being used. */
+function renderGlossaryStatus() {
+  const raw = $("#glossary").value || "";
+  const lines = raw.split(/\r?\n/);
+  const total = lines.filter(l => l.trim() && !l.trim().startsWith("#")).length;
+  const parsed = parseGlossary(raw);
+  const dot = $("#glossaryStatus")?.querySelector(".dot");
+  const text = $("#glossaryStatusText");
+  if (!text) return;
+  if (raw.trim() === "") {
+    text.textContent = "尚未填写";
+    dot?.classList.remove("ok", "err");
+    return;
+  }
+  const bad = total - parsed.length;
+  const savedNote = "（保存后自动触发已翻译网页的重译）";
+  if (parsed.length && bad === 0) {
+    text.textContent = `${parsed.length} 条已启用 ${savedNote}`;
+    dot?.classList.add("ok"); dot?.classList.remove("err");
+  } else if (parsed.length && bad > 0) {
+    text.textContent = `${parsed.length} 条已启用，${bad} 行格式不正确（被忽略）`;
+    dot?.classList.add("err"); dot?.classList.remove("ok");
+  } else {
+    text.textContent = `无法解析 · 检查格式（原文 => 译文）`;
+    dot?.classList.add("err"); dot?.classList.remove("ok");
+  }
+}
+
+$("#glossary").addEventListener("input", renderGlossaryStatus);
+$("#glossary").addEventListener("change", (e) => {
+  save("glossary", parseGlossary(e.target.value));
+  renderGlossaryStatus();
+});
 $("#showFab").addEventListener("change", (e) => save("showFab", e.target.checked));
 $("#translationFont").addEventListener("change", (e) => save("translationFont", (e.target.value || "").trim()));
 
