@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "glance-ext-static",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "9321", "--directory", "extension"],
+      "port": 9321
+    }
+  ]
+}
