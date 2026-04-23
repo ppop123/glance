@@ -23,6 +23,16 @@
       </span>
     </button>
 
+    <!-- Shown only when the active tab URL ends in .pdf. HTML viewer converts
+         the paper into paragraph-by-paragraph bilingual reading view. -->
+    <div class="pdf-banner" id="pdf-banner" hidden>
+      <div class="pdf-banner-text">
+        <div class="pdf-banner-title">当前是 PDF 文件</div>
+        <div class="pdf-banner-sub">扩展无法直接翻译 PDF，可在阅读器中打开双语版</div>
+      </div>
+      <button class="pdf-banner-btn" id="pdf-open">打开阅读器</button>
+    </div>
+
     <div class="site-row">
       <span class="host"><span class="favicon"></span><b id="host">—</b></span>
       <span class="spacer"></span>

@@ -5,14 +5,16 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
+import html as _html
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
+from .pdf_extract import extract_paragraphs, MAX_PAGES_HARD_CAP
 from .providers_store import ProvidersStore
 from .stats import StatsStore
 from .translator import TranslateItem, Translator, UnknownProviderError
@@ -363,6 +365,201 @@ async def public_config():
             if p.enabled
         ],
     }
+
+
+def _render_pdf_html(
+    *, src_url: str, pairs: list[tuple[int, str, str]],
+    error: str | None = None, meta: dict | None = None,
+) -> str:
+    """Render the bilingual reading view. `pairs` is a list of
+    (page, source_text, translation). `meta` carries stats like token
+    counts + elapsed ms. Kept in one place so the streaming-progress
+    version and the complete-render version share styling."""
+    title = src_url.rsplit("/", 1)[-1] or "PDF"
+    esc = _html.escape
+    body_chunks: list[str] = []
+    last_page = -1
+    for page, src, tr in pairs:
+        if page != last_page:
+            body_chunks.append(f'<h2 class="pg">第 {page} 页</h2>')
+            last_page = page
+        tr_block = (
+            f'<div class="tr">{esc(tr)}</div>' if tr else
+            '<div class="tr tr-missing">（未翻译）</div>'
+        )
+        body_chunks.append(
+            '<article class="para">'
+            f'<div class="src">{esc(src)}</div>{tr_block}'
+            '</article>'
+        )
+    meta = meta or {}
+    meta_line = ""
+    if meta.get("paragraphs") is not None:
+        parts = [f"{meta['paragraphs']} 段"]
+        if meta.get("pages_translated") and meta.get("pages_total"):
+            parts.append(f"共 {meta['pages_translated']}/{meta['pages_total']} 页")
+        if meta.get("elapsed_ms"):
+            parts.append(f"耗时 {meta['elapsed_ms']} ms")
+        if meta.get("tokens_in"):
+            parts.append(f"输入 {meta['tokens_in']:,} token")
+        meta_line = f'<p class="meta">{" · ".join(parts)}</p>'
+        if meta.get("truncated"):
+            # Use URLSearchParams-style to preserve target/model if present.
+            from urllib.parse import urlencode
+            all_url = "?" + urlencode({"src": meta.get("src_url") or "", "pages": 0})
+            meta_line += (
+                f'<p class="meta">⚠ 默认只翻译前 10 页控费 · '
+                f'<a href="{esc(all_url)}" style="color: var(--accent); text-decoration: none;">'
+                f'加载全部 {meta["pages_total"]} 页 ↗</a></p>'
+            )
+    err_line = f'<p class="err">⚠ {esc(error)}</p>' if error else ""
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{esc(title)} · 翻译</title>
+<style>
+  :root {{ color-scheme: light dark;
+    --bg:#f6f8fa; --card:#fff; --text:#1f2328; --muted:#656d76;
+    --border:#d0d7de; --accent:#2d8cf0; --danger:#cf222e;
+  }}
+  @media (prefers-color-scheme: dark) {{ :root {{
+    --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e;
+    --border:#30363d;
+  }} }}
+  * {{ box-sizing: border-box }}
+  body {{ margin: 0; padding: 24px 20px 60px;
+    font: 15px/1.65 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--bg); color: var(--text); }}
+  .wrap {{ max-width: 820px; margin: 0 auto; }}
+  header.top {{ display:flex; align-items:baseline; gap:12px; margin-bottom: 8px; }}
+  header.top h1 {{ font-size: 20px; font-weight:700; margin:0; }}
+  header.top a {{ font-size: 13px; color: var(--muted); text-decoration: none; }}
+  header.top a:hover {{ text-decoration: underline; }}
+  .meta {{ color: var(--muted); font-size: 12px; margin: 0 0 24px; }}
+  .err {{ color: var(--danger); background: rgba(207,34,46,.08); padding: 10px 14px; border-radius: 8px; }}
+  h2.pg {{ font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); margin: 30px 0 8px;
+    border-top: 1px solid var(--border); padding-top: 12px; }}
+  .para {{ background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin: 0 0 10px; }}
+  .src {{ color: var(--muted); font-size: 13.5px; line-height: 1.55; }}
+  .tr  {{ margin-top: 6px; font-size: 15.5px; line-height: 1.75;
+    font-family: "PingFang SC", "Noto Sans CJK SC", sans-serif; }}
+  .tr-missing {{ color: var(--muted); font-style: italic; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>{esc(title)}</h1>
+    <a href="{esc(src_url)}" target="_blank" rel="noopener">查看原 PDF ↗</a>
+  </header>
+  {meta_line}
+  {err_line}
+  {"".join(body_chunks)}
+</div>
+</body>
+</html>"""
+
+
+@app.get("/pdf/view", response_class=HTMLResponse)
+async def pdf_view(
+    src: str,
+    target: str | None = None,
+    model: str | None = None,
+    pages: int | None = None,
+):
+    """Fetch a PDF by URL, extract paragraphs, translate them, and return
+    a self-contained bilingual HTML reader. Intended to be opened in a new
+    tab from the extension popup's "翻译 PDF" button.
+
+    Security: only follows `src` URLs that the user's browser could also
+    reach (we don't enforce an allowlist — this is a localhost service).
+    The worst a malicious `src` can do is waste the user's API quota;
+    no credentials are forwarded."""
+    import time
+    t0 = time.perf_counter()
+    if not src or not src.startswith(("http://", "https://")):
+        raise HTTPException(400, "src must be an http(s) URL")
+    if len(src) > 2000:
+        raise HTTPException(400, "src URL too long")
+
+    # 1) Download the PDF. Follow redirects (arxiv /pdf/<id> → CDN).
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+            r = await c.get(src)
+            r.raise_for_status()
+            content_type = r.headers.get("content-type", "")
+            if "pdf" not in content_type.lower() and not src.lower().endswith(".pdf"):
+                # Be lenient — some sites serve application/octet-stream for PDFs.
+                log.warning("/pdf/view: unexpected content-type %r for %s", content_type, src)
+            pdf_bytes = r.content
+    except httpx.HTTPError as e:
+        return HTMLResponse(
+            _render_pdf_html(src_url=src, pairs=[], error=f"下载 PDF 失败：{e}"),
+            status_code=502,
+        )
+
+    if len(pdf_bytes) > 40 * 1024 * 1024:
+        return HTMLResponse(
+            _render_pdf_html(src_url=src, pairs=[],
+                             error="PDF 超过 40 MB 上限，本阅读器暂不处理"),
+            status_code=413,
+        )
+
+    # 2) Extract paragraphs — runs in a worker thread so the event loop stays
+    # responsive (pdfminer is pure-Python and CPU-bound on big PDFs).
+    import asyncio
+    try:
+        paras = await asyncio.to_thread(extract_paragraphs, pdf_bytes)
+    except Exception as e:
+        log.exception("pdf extract failed")
+        return HTMLResponse(
+            _render_pdf_html(src_url=src, pairs=[],
+                             error=f"解析 PDF 失败：{e}"),
+            status_code=500,
+        )
+
+    if not paras:
+        return HTMLResponse(_render_pdf_html(
+            src_url=src, pairs=[],
+            error=f"从该 PDF 中没有抽到可翻译的文本（可能是扫描件 / 纯图片 PDF）。",
+        ))
+
+    # Page cap — long papers take minutes to translate and cost real money.
+    # Default: first 10 pages. Users can override with ?pages=N (or 0=unlimited
+    # within the hard cap above).
+    total_pages = max(p.page for p in paras)
+    requested = pages if pages is not None else 10
+    if requested > 0 and requested < total_pages:
+        paras = [p for p in paras if p.page <= requested]
+
+    # 3) Translate. Use the existing translator — same batch/cache/provider
+    # failover path as the inline extension translation.
+    try:
+        result = await app.state.translator.translate(
+            [TranslateItem(text=p.text) for p in paras],
+            target_lang=target or cfg.defaults.target_lang,
+            model=model,
+            topic="academic",
+        )
+    except UnknownProviderError as e:
+        raise HTTPException(400, str(e))
+
+    pairs = [(p.page, p.text, tr) for p, tr in zip(paras, result.translations)]
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    truncated = requested > 0 and requested < total_pages
+    meta = {
+        "paragraphs": len(pairs),
+        "elapsed_ms": elapsed_ms,
+        "tokens_in": None,  # /translate doesn't expose aggregate tokens yet
+        "pages_translated": min(requested, total_pages) if requested > 0 else total_pages,
+        "pages_total": total_pages,
+        "truncated": truncated,
+        "src_url": src,
+    }
+    return HTMLResponse(_render_pdf_html(src_url=src, pairs=pairs, meta=meta))
 
 
 @app.post("/transcribe")

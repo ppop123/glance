@@ -10,6 +10,7 @@ dependencies = [
     "pyyaml>=6.0",
     "orjson>=3.10",
     "python-multipart>=0.0.26",
+    "pdfminer.six>=20240706",
 ]
 
 [tool.uv]
