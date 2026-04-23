@@ -309,8 +309,10 @@ export function isStale(el, currentText) {
 
 /** Remove the translation wrapper and clear marks so the unit will be re-translated. */
 export function clearUnit(el) {
-  const w = el.querySelector(`:scope > .${WRAPPER_CLASS}`);
-  if (w) w.remove();
+  // Sweep ALL wrapper + failure-chip siblings, not just the first. A race
+  // (React re-render, concurrent dispatch, stale cache on model-switch) can
+  // leave more than one behind — querySelector('...') misses the extras.
+  el.querySelectorAll(`:scope > .${WRAPPER_CLASS}, :scope > .fanyi-failed-msg`).forEach(n => n.remove());
   el.removeAttribute(SRC_HASH_ATTR);
   // keep MARK_ATTR so idCounter stays stable; the stale check forces re-queue
 }
@@ -321,9 +323,11 @@ export function clearUnit(el) {
  */
 export function appendTranslation(el, translated) {
   if (!translated || !translated.trim()) return;
-  // Remove prior translation if any
-  const existing = el.querySelector(`:scope > .${WRAPPER_CLASS}`);
-  if (existing) existing.remove();
+  // Remove ALL prior wrappers + any failure chip. The duplicate-translation
+  // regression this catches: user switches model while old wrappers are still
+  // in the DOM, then a re-scan or scroll event fires a fresh translate call
+  // that goes through here — without this, stacks 2+ wrappers.
+  el.querySelectorAll(`:scope > .${WRAPPER_CLASS}, :scope > .fanyi-failed-msg`).forEach(n => n.remove());
 
   const wrap = document.createElement(WRAPPER_TAG);
   wrap.className = WRAPPER_CLASS;
