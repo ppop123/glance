@@ -54,10 +54,11 @@
 
     <section class="card">
       <h2>术语表</h2>
-      <p class="hint">每行一条映射，强制翻译保持一致。格式：<code>原文 => 译文</code>。示例：<br>
+      <p class="hint">每行一条映射，强制翻译保持一致。格式：<code>原文 => 译文</code>（也支持 <code>→</code> 或 <code>-&gt;</code>，<code>#</code> 开头的行被忽略）。示例：<br>
         <code>Kubernetes => K8s</code>　<code>Einstein => 爱因斯坦</code>
       </p>
       <textarea id="glossary" rows="5" placeholder="OpenAI => OpenAI&#10;Claude => Claude&#10;vibe coding => 氛围编程"></textarea>
+      <div class="status" id="glossaryStatus"><span class="dot"></span><span id="glossaryStatusText">尚未填写</span></div>
     </section>
 
     <section class="card">

@@ -15,7 +15,7 @@ from .cache import Cache
 from .config import load_config
 from .providers_store import ProvidersStore
 from .stats import StatsStore
-from .translator import TranslateItem, Translator
+from .translator import TranslateItem, Translator, UnknownProviderError
 from .vtt_cache import VttCache, canonical_url
 
 
@@ -114,6 +114,12 @@ async def translate(req: TranslateReq):
     if len(req.items) > 200:
         raise HTTPException(400, "max 200 items per request")
     tr = app.state.translator
+    # Fail early with a clear message if the client's model string names a
+    # provider that isn't configured — avoids a confusing upstream 400.
+    try:
+        tr.resolve_model(req.model)
+    except UnknownProviderError as e:
+        raise HTTPException(400, str(e))
     result = await tr.translate(
         [TranslateItem(text=i.text, tag=i.tag, context=i.context) for i in req.items],
         target_lang=req.target_lang,
@@ -146,6 +152,10 @@ async def translate_stream(req: TranslateReq):
     if len(req.items) > 2000:
         raise HTTPException(400, "max 2000 items per request")
     tr = app.state.translator
+    try:
+        tr.resolve_model(req.model)
+    except UnknownProviderError as e:
+        raise HTTPException(400, str(e))
 
     async def gen():
         try:

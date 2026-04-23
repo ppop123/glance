@@ -12,6 +12,41 @@ import time
 from pathlib import Path
 
 
+# Rough public list prices per 1M tokens (USD), input / output. Meant for
+# back-of-envelope "how much did I spend this month" — NOT a billing ledger.
+# Values are picked to reflect early-2026 public pricing; users who care about
+# accuracy should override these in their own config (future hook — for now
+# the extension just shows the estimate alongside the token counts).
+#
+# Matching is substring-based (lower-cased) so "claude-haiku-4-5-20251001"
+# still hits the "claude-haiku" row.
+DEFAULT_PRICING_USD_PER_1M: list[tuple[str, float, float]] = [
+    # (model substring, input $/1M, output $/1M)
+    ("claude-haiku",        1.00,   5.00),
+    ("claude-sonnet",       3.00,  15.00),
+    ("claude-opus",        15.00,  75.00),
+    ("gpt-5.4",             5.00,  20.00),
+    ("gpt-5",               5.00,  20.00),
+    ("gpt-4.1",             2.50,  10.00),
+    ("gpt-4o",              2.50,  10.00),
+    ("gpt-4",              10.00,  30.00),
+    ("deepseek-chat",       0.14,   0.28),
+    ("deepseek-reasoner",   0.55,   2.19),
+    ("kimi",                0.60,   2.40),
+    ("qwen",                0.50,   2.00),
+    ("glm",                 0.50,   1.50),
+]
+
+
+def estimate_cost_usd(model: str, tokens_in: int, tokens_out: int) -> float:
+    """Return a rough USD estimate for the given call. Unknown model → 0."""
+    m = (model or "").lower()
+    for sub, pin, pout in DEFAULT_PRICING_USD_PER_1M:
+        if sub in m:
+            return (tokens_in * pin + tokens_out * pout) / 1_000_000.0
+    return 0.0
+
+
 class StatsStore:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,6 +111,8 @@ class StatsStore:
         out: list[dict] = []
         for provider, model, calls, errors, lat_sum, tokens_in, tokens_out in rows:
             calls = calls or 0
+            tin = tokens_in or 0
+            tout = tokens_out or 0
             out.append({
                 "provider": provider,
                 "model": model,
@@ -83,7 +120,8 @@ class StatsStore:
                 "errors": errors or 0,
                 "success_rate": (1 - (errors or 0) / calls) if calls else 0.0,
                 "avg_latency_ms": (lat_sum / calls) if calls else 0.0,
-                "tokens_in": tokens_in or 0,
-                "tokens_out": tokens_out or 0,
+                "tokens_in": tin,
+                "tokens_out": tout,
+                "cost_usd": round(estimate_cost_usd(model, tin, tout), 4),
             })
         return out
