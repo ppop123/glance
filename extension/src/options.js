@@ -411,32 +411,41 @@ function escHtml(s) {
   return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+let _providers = [];
+
 function populateModelDropdown(providers, defaultModel) {
-  const sel = $("#model");
-  const current = sel.value;
-  sel.innerHTML = "";
-  if (!providers.length) return;
-  const multi = providers.length > 1;
-  for (const p of providers) {
-    const parent = multi ? (() => {
-      const g = document.createElement("optgroup");
-      g.label = p.label || p.name;
-      sel.appendChild(g);
-      return g;
-    })() : sel;
-    for (const m of (p.models || [])) {
-      const opt = document.createElement("option");
-      opt.value = `${p.name}:${m}`;
-      opt.textContent = multi ? m : m;
-      parent.appendChild(opt);
-    }
+  _providers = providers || [];
+  const provSel = $("#provider");
+  if (!provSel) return;
+  provSel.innerHTML = "";
+  for (const p of _providers) {
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.label || p.name;
+    provSel.appendChild(o);
   }
-  const desired = current || defaultModel;
-  if (!desired) return;
-  // Exact match first; otherwise match on suffix (legacy unprefixed defaults).
-  let opt = sel.querySelector(`option[value="${CSS.escape(desired)}"]`);
-  if (!opt) opt = Array.from(sel.querySelectorAll("option")).find(o => o.value.endsWith(":" + desired));
-  if (opt) sel.value = opt.value;
+  const [wantedProv, wantedModel] = (defaultModel || "").split(":");
+  const picked = _providers.find((p) => p.name === wantedProv) || _providers[0];
+  if (picked) provSel.value = picked.name;
+  renderModelsForProvider(picked, wantedModel || (defaultModel && !defaultModel.includes(":") ? defaultModel : null));
+}
+
+function renderModelsForProvider(provider, desiredModel) {
+  const mSel = $("#model");
+  mSel.innerHTML = "";
+  if (!provider) return;
+  for (const m of (provider.models || [])) {
+    const o = document.createElement("option");
+    o.value = `${provider.name}:${m}`;
+    o.textContent = m;
+    mSel.appendChild(o);
+  }
+  if (desiredModel) {
+    const hit = Array.from(mSel.querySelectorAll("option")).find(
+      (o) => o.value === `${provider.name}:${desiredModel}` || o.value.endsWith(":" + desiredModel)
+    );
+    if (hit) mSel.value = hit.value;
+  }
 }
 
 /** Parse glossary textarea — lines like "src => dst" or "src → dst". Lenient. */
@@ -519,6 +528,12 @@ $("#serverUrl").addEventListener("change", async (e) => {
   refreshServer();
 });
 $("#targetLang").addEventListener("change", (e) => save("targetLang", e.target.value));
+$("#provider").addEventListener("change", (e) => {
+  const p = _providers.find((x) => x.name === e.target.value);
+  renderModelsForProvider(p, null);
+  const first = $("#model").value;
+  if (first) save("model", first);
+});
 $("#model").addEventListener("change", (e) => save("model", e.target.value));
 $("#autoSites").addEventListener("change", (e) => save("autoSites", parseAutoSites(e.target.value)));
 $("#subDefaultSeconds").addEventListener("change", (e) => save("subDefaultSeconds", Math.max(5, parseInt(e.target.value || "60", 10))));

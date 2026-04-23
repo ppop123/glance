@@ -48,15 +48,20 @@ async function refreshStatus() {
 
 /* ── server status & config sync ─────────────────────────────────── */
 
+// Keep the providers list in module scope — the provider <select>'s change
+// handler needs to look up models for the selected name without another
+// /config roundtrip.
+let _providers = [];
+
 async function refreshServer() {
   const dot = $("#serverDot");
   try {
     const c = await getConfig();
     dot.className = "dot ok";
     $("#serverText").textContent = `${c.default_model} → ${c.default_target}`;
-    populateModelDropdown(c.providers || [], c.default_model);
+    _providers = c.providers || [];
     const prefs = await chrome.storage.sync.get({ model: null, targetLang: null });
-    $("#model").value = prefs.model || c.default_model;
+    populateProviderAndModel(prefs.model || c.default_model);
     $("#targetLang").value = prefs.targetLang || c.default_target;
   } catch (e) {
     dot.className = "dot err";
@@ -92,6 +97,13 @@ $("#autoSite").addEventListener("change", async (e) => {
 
 $("#targetLang").addEventListener("change", async (e) => {
   await chrome.storage.sync.set({ targetLang: e.target.value });
+});
+
+$("#provider").addEventListener("change", async (e) => {
+  const p = _providers.find((x) => x.name === e.target.value);
+  renderModelsForProvider(p, null);
+  const firstModel = $("#model").value;
+  if (firstModel) await chrome.storage.sync.set({ model: firstModel });
 });
 
 $("#model").addEventListener("change", async (e) => {
@@ -136,36 +148,42 @@ $("#sub-go").addEventListener("click", async () => {
   }
 });
 
-/** Rebuild the model <select> from server-reported providers. Single-provider
- * case renders flat; multi-provider renders <optgroup> per provider so the
- * user can tell DeepSeek's "chat" from OpenRouter's "chat" at a glance. */
-function populateModelDropdown(providers, defaultModel) {
-  const sel = $("#model");
-  const current = sel.value;
-  sel.innerHTML = "";
-  if (!providers.length) return;
-  const multi = providers.length > 1;
-  for (const p of providers) {
-    const parent = multi ? (() => {
-      const g = document.createElement("optgroup");
-      g.label = p.label || p.name;
-      sel.appendChild(g);
-      return g;
-    })() : sel;
-    for (const m of (p.models || [])) {
-      const opt = document.createElement("option");
-      // Always stable provider:model form so the server can route unambiguously.
-      opt.value = `${p.name}:${m}`;
-      opt.textContent = multi ? m : `${m}`;
-      parent.appendChild(opt);
-    }
+/** Populate the provider + model dropdowns. `desired` is a "provider:model"
+ * or bare model name — we resolve it to the matching provider row and set
+ * both selects together. Changing provider re-scopes the model list. */
+function populateProviderAndModel(desired) {
+  const provSel = $("#provider");
+  provSel.innerHTML = "";
+  for (const p of _providers) {
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.label || p.name;
+    provSel.appendChild(o);
   }
-  // Prefer previous user pick → server default → first option.
-  const desired = current || defaultModel;
-  if (!desired) return;
-  let opt = sel.querySelector(`option[value="${CSS.escape(desired)}"]`);
-  if (!opt) opt = Array.from(sel.querySelectorAll("option")).find(o => o.value.endsWith(":" + desired));
-  if (opt) sel.value = opt.value;
+  // Pick the provider matching `desired` if possible, else first.
+  const [wantedProv, wantedModel] = (desired || "").split(":");
+  const pickedProv = _providers.find(p => p.name === wantedProv) || _providers[0];
+  if (pickedProv) provSel.value = pickedProv.name;
+  renderModelsForProvider(pickedProv, wantedModel || (desired && !desired.includes(":") ? desired : null));
+}
+
+function renderModelsForProvider(provider, desiredModel) {
+  const mSel = $("#model");
+  mSel.innerHTML = "";
+  if (!provider) return;
+  for (const m of (provider.models || [])) {
+    const o = document.createElement("option");
+    o.value = `${provider.name}:${m}`;
+    o.textContent = m;
+    mSel.appendChild(o);
+  }
+  // Prefer requested model; else first.
+  if (desiredModel) {
+    const hit = Array.from(mSel.querySelectorAll("option")).find(
+      (o) => o.value === `${provider.name}:${desiredModel}` || o.value.endsWith(":" + desiredModel)
+    );
+    if (hit) mSel.value = hit.value;
+  }
 }
 
 async function getServerUrl() {
