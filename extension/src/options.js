@@ -213,6 +213,7 @@ function openProviderForm(template) {
   if (template.docUrl) { link.href = template.docUrl; link.textContent = "获取 API Key ↗"; link.hidden = false; }
   else link.hidden = true;
   $("#pfResult").textContent = "";
+  $("#pfFetchResult").textContent = "";
   form.dataset.editing = "";
   form.hidden = false;
 }
@@ -230,6 +231,7 @@ function openProviderFormForEdit(provider) {
   $("#pfModels").value = (provider.models || []).join("\n");
   $("#pfDocLink").hidden = true;
   $("#pfResult").textContent = "";
+  $("#pfFetchResult").textContent = "";
   form.dataset.editing = provider.name;
   form.hidden = false;
   form.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -318,6 +320,31 @@ function wireProviderForm() {
     const showing = input.type === "text";
     input.type = showing ? "password" : "text";
     $("#pfToggleKey").textContent = showing ? "显示" : "隐藏";
+  });
+  $("#pfFetchModels").addEventListener("click", async () => {
+    const base_url = $("#pfBaseUrl").value.trim();
+    const api_key = $("#pfApiKey").value;
+    if (!base_url) { $("#pfFetchResult").textContent = "先填端点"; return; }
+    $("#pfFetchResult").textContent = "拉取中…";
+    try {
+      const r = await serverFetch("/providers/list-models", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ base_url, api_key }),
+      });
+      const j = await r.json();
+      if (!j.ok) { $("#pfFetchResult").textContent = `✗ ${j.error}`; return; }
+      const models = j.models || [];
+      if (!models.length) {
+        $("#pfFetchResult").textContent = `无模型（返回 ${j.total || 0} 条，都被过滤）`;
+        return;
+      }
+      $("#pfModels").value = models.join("\n");
+      const dropped = j.filtered ? ` · 已过滤 ${j.filtered} 个非文本模型` : "";
+      $("#pfFetchResult").textContent = `✓ ${models.length} 个模型${dropped}`;
+    } catch (e) {
+      $("#pfFetchResult").textContent = `✗ ${e?.message || e}`;
+    }
   });
   $("#pfTest").addEventListener("click", async () => {
     const body = readProviderForm();

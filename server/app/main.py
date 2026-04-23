@@ -238,6 +238,50 @@ async def delete_provider(name: str):
     return {"ok": True}
 
 
+class ListModelsReq(BaseModel):
+    base_url: str
+    api_key: str = ""
+    timeout_s: int = 15
+
+
+@app.post("/providers/list-models")
+async def list_models(req: ListModelsReq):
+    """GET {base_url}/models with the user's api_key and return the model ids.
+    Used by the options UI's '拉取模型列表' button to auto-populate the models
+    field right after the user pastes their key, so they don't have to type
+    model IDs by hand."""
+    headers = {}
+    if req.api_key:
+        headers["Authorization"] = f"Bearer {req.api_key}"
+    try:
+        async with httpx.AsyncClient(base_url=req.base_url.rstrip("/"), timeout=req.timeout_s, headers=headers) as c:
+            r = await c.get("/models")
+            if r.status_code >= 400:
+                return {"ok": False, "error": f"HTTP {r.status_code}: {r.text[:300]}"}
+            data = r.json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    # OpenAI-standard shape: {"data": [{"id": ...}, ...]}. Some providers wrap it
+    # differently, so try a few common shapes before giving up.
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        items = data.get("models") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return {"ok": False, "error": "unexpected /models response shape"}
+    ids: list[str] = []
+    for it in items:
+        if isinstance(it, str):
+            ids.append(it)
+        elif isinstance(it, dict):
+            mid = it.get("id") or it.get("name")
+            if isinstance(mid, str):
+                ids.append(mid)
+    # Drop obvious non-chat artifacts users won't translate with.
+    drop_substrings = ("embedding", "whisper", "tts", "audio", "dall-e", "moderation", "image", "speech", "vision-preview")
+    chat_ids = [i for i in ids if not any(s in i.lower() for s in drop_substrings)]
+    return {"ok": True, "models": chat_ids, "total": len(ids), "filtered": len(ids) - len(chat_ids)}
+
+
 @app.post("/providers/test")
 async def test_provider(req: ProviderReq):
     """Try a single tiny translation against the given provider config WITHOUT

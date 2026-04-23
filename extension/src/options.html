@@ -133,7 +133,13 @@
         </div>
         <div class="row" style="align-items:flex-start">
           <label for="pfModels">模型列表</label>
-          <textarea id="pfModels" rows="3" placeholder="一行一个模型 id" style="flex:1"></textarea>
+          <div style="flex:1; display:flex; flex-direction:column; gap:4px">
+            <textarea id="pfModels" rows="3" placeholder="一行一个模型 id"></textarea>
+            <div style="display:flex; gap:8px; align-items:center">
+              <button type="button" id="pfFetchModels" class="btn-mini">从服务商拉取</button>
+              <span id="pfFetchResult" class="hint" style="flex:1"></span>
+            </div>
+          </div>
         </div>
         <div class="row">
           <a id="pfDocLink" class="hint" href="#" target="_blank" rel="noopener" hidden>获取 API Key ↗</a>
