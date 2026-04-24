@@ -136,7 +136,16 @@ function isNoOpTranslation(src, tr) {
  * pending after PILL_SHOW_DELAY_MS. Fast bursts (incremental scroll translating
  * 2-3 tweets in <600ms) never show the pill at all. Large initial scans that
  * take seconds do show it. Click to cancel. */
-const PILL_SHOW_DELAY_MS = 600;
+// Only reveal the pill when the work actually feels noticeable. Two guards:
+//   - PILL_SHOW_DELAY_MS: wait this long before even considering reveal
+//   - PILL_MIN_TOTAL:     don't reveal unless at least this many items are
+//                         queued — a single tweet scrolling in at 700ms is
+//                         not interesting enough to flash "翻译中 0/1" at
+//                         the user every time they scroll.
+// Failure path still force-reveals (see pillAdvance) so upstream errors
+// aren't silent.
+const PILL_SHOW_DELAY_MS = 1500;
+const PILL_MIN_TOTAL = 3;
 const PILL_DONE_LINGER_MS = 1200;
 
 let pillTotal = 0;
@@ -205,7 +214,8 @@ function pillAdd(n) {
   if (pillShowTimer) return;
   pillShowTimer = setTimeout(() => {
     pillShowTimer = null;
-    if (pillDone >= pillTotal) return;  // finished during the grace window
+    if (pillDone >= pillTotal) return;           // finished during the grace window
+    if (pillTotal < PILL_MIN_TOTAL) return;       // too small to be worth flashing
     pillEnsure();
     pillRender();
   }, PILL_SHOW_DELAY_MS);
