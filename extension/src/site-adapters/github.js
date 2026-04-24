@@ -50,13 +50,11 @@ export function discoverUnits() {
 }
 
 export function prioritize(units) {
-  const vh = window.innerHeight || 800;
+  // Strict DOM order — long issue / PR comment threads read top-to-bottom
+  // just like HN. See generic.js for the full rationale.
   return units.slice().sort((a, b) => {
     const ra = a.el.getBoundingClientRect();
     const rb = b.el.getBoundingClientRect();
-    const onScreenA = ra.top < vh && ra.bottom > 0;
-    const onScreenB = rb.top < vh && rb.bottom > 0;
-    if (onScreenA !== onScreenB) return onScreenA ? -1 : 1;
     return ra.top - rb.top;
   });
 }

@@ -12,15 +12,24 @@ export function discoverUnits() {
   return findUnits([document.body]);
 }
 
-/** Sort by viewport distance so visible content gets translated first. */
+/** Sort by document order (top-to-bottom). The viewport-gate in
+ * content_main.translateUnits() already narrows candidates to items near
+ * the user's current scroll; within that window, strict DOM order matches
+ * how people actually read (from the top of whatever section they're on).
+ *
+ * Earlier we sorted by "viewport distance" — on-screen first, then
+ * below-viewport by increasing distance, then above-viewport last. That
+ * fought the user's mental model: after scrolling down then back up, the
+ * queue was full of middle-of-doc items scheduled first, and the top
+ * comments stayed untranslated for tens of seconds. DOM order makes
+ * progress visibly propagate from wherever the user currently is, always
+ * forward in reading direction.
+ */
 export function prioritize(units) {
-  const vh = window.innerHeight || 800;
   return units.slice().sort((a, b) => {
     const ra = a.el.getBoundingClientRect();
     const rb = b.el.getBoundingClientRect();
-    const keyA = ra.top < 0 ? 2000 + Math.abs(ra.top) : ra.top;
-    const keyB = rb.top < 0 ? 2000 + Math.abs(rb.top) : rb.top;
-    return keyA - keyB;
+    return ra.top - rb.top;   // same scrollY for both → equivalent to doc order
   });
 }
 
