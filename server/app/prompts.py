@@ -52,7 +52,13 @@ TOPIC_HINTS: dict[str, str] = {
         "precise phrasing. Keep technical terminology faithful — prefer established discipline-standard "
         "translations over literal word-by-word. "
         "IMPORTANT: paper titles and section headings ARE prose that MUST be translated — do not leave "
-        "an English title in the output. Author names and affiliations stay in their original script."
+        "an English title in the output. Author names and affiliations stay in their original script. "
+        "MATH RULE: when an expression contains subscripts, superscripts, Greek letters, operators "
+        "(log, sum, integral), or function-call notation, wrap the ENTIRE expression in `$...$` so a "
+        "downstream MathJax renderer displays it. Use proper LaTeX: `E_P`, `\\log`, `\\alpha`, "
+        "`\\text{pass\\_rate}`. Do NOT produce half-LaTeX — if you add a backslash escape like `\\_`, "
+        "you MUST wrap the whole expression in `$...$`. If you're unsure, leave the math in its "
+        "original unicode form (α, β, …) instead of partial LaTeX."
     ),
     "finance": (
         "Genre: finance / markets / investing. Preserve tickers ($AAPL, 700.HK), numeric values, "
