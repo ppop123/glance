@@ -83,6 +83,11 @@ export function observe(onNewUnits) {
   mo.observe(attachTo, { childList: true, subtree: true, characterData: true });
   document.addEventListener("turbo:render", () => schedule("turbo"));
   document.addEventListener("pjax:end", () => schedule("pjax"));
+  // Scroll-triggered rescan — long issue threads are mostly server-rendered,
+  // so without this the viewport-gate in translateUnits defers far-below
+  // units and they never get picked up on scroll.
+  const onScroll = () => schedule("scroll");
+  window.addEventListener("scroll", onScroll, { passive: true, capture: true });
   // If we attached to documentElement because body wasn't ready yet, re-target once body exists.
   let rebindInterval = null;
   if (attachTo !== document.body) {
@@ -111,6 +116,7 @@ export function observe(onNewUnits) {
 
   return () => {
     mo.disconnect();
+    window.removeEventListener("scroll", onScroll, { capture: true });
     clearInterval(urlInterval);
     if (rebindInterval) clearInterval(rebindInterval);
     kicks.forEach(clearTimeout);
