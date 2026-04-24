@@ -83,10 +83,26 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
             raw = box.get_text()
             if not raw:
                 continue
-            # Join hyphenated line breaks common in justified text
-            raw = re.sub(r"-\n(\w)", r"\1", raw)
-            # Join soft line breaks inside a paragraph (no blank line between)
+            # Hyphen-at-EOL handling. Order matters — do this BEFORE the soft
+            # line-break join below, otherwise `-\n` becomes `- ` and we lose
+            # the signal to distinguish these two cases:
+            #
+            # (1) Word broken mid-syllable by justified-text wrapping:
+            #     "lang-\nuage" → "language" (hyphen IS a typographic artifact)
+            # (2) Compound proper noun with an intentional hyphen:
+            #     "Mixture-of-\nExperts" → "Mixture-of-Experts" (hyphen stays)
+            #
+            # Distinguishing heuristic: in (1) both sides are lowercase, in (2)
+            # the right side starts with an uppercase letter (or digit, as in
+            # "DeepSeek-V4-\nPro" where it's already an alphabetic class).
+            raw = re.sub(r"([a-z])-\n([a-z])", r"\1\2", raw)      # (1) join
+            raw = re.sub(r"-\n", "-", raw)                        # (2) strip \n, keep -
+            # Join the rest of the soft line breaks inside a paragraph. The
+            # `.!?` lookbehind preserves sentence terminators so the paragraph
+            # splitter below still fires at real paragraph boundaries.
             raw = re.sub(r"(?<![.!?])\n(?!\n)", " ", raw)
+            # Tidy up any doubled spaces left by the joins.
+            raw = re.sub(r"  +", " ", raw)
             # Split on blank lines — pdfminer uses them to delimit paragraph runs
             for chunk in raw.split("\n"):
                 t = _normalize(chunk)
