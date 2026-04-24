@@ -254,6 +254,11 @@ class ListModelsReq(BaseModel):
     base_url: str
     api_key: str = ""
     timeout_s: int = 15
+    # Optional: if set and api_key is empty, fall back to the stored credential
+    # for this provider. Lets the inline edit form refresh the model list
+    # without making the user paste their key again. Only accepts names that
+    # exist in the user store or config; missing → api_key stays empty.
+    name: str | None = None
 
 
 @app.post("/providers/list-models")
@@ -262,9 +267,20 @@ async def list_models(req: ListModelsReq):
     Used by the options UI's '拉取模型列表' button to auto-populate the models
     field right after the user pastes their key, so they don't have to type
     model IDs by hand."""
+    api_key = req.api_key
+    if not api_key and req.name:
+        # Look up stored credential by provider name. User-store first (what
+        # the inline edit typically targets), config.yaml second.
+        stored = None
+        if app.state.providers_store is not None:
+            stored = app.state.providers_store.get(req.name)
+        if stored is None:
+            stored = cfg.find_provider(req.name)
+        if stored is not None:
+            api_key = stored.api_key
     headers = {}
-    if req.api_key:
-        headers["Authorization"] = f"Bearer {req.api_key}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     try:
         async with httpx.AsyncClient(base_url=req.base_url.rstrip("/"), timeout=req.timeout_s, headers=headers) as c:
             r = await c.get("/models")
