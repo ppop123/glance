@@ -24,9 +24,31 @@ export function prioritize(units) {
   });
 }
 
-/** Observer: DOM mutations trigger re-scan. Returns a disconnect fn. */
+/** Observer: DOM mutations AND scroll both trigger re-scan. The scroll path
+ * is essential for static-HTML pages (Hacker News, Reddit's old UI, plain
+ * news articles) where ALL content is in the DOM from first paint — without
+ * a scroll listener, units far below the initial viewport stay deferred
+ * forever by the viewport-gate in content_main.translateUnits(). Throttled
+ * via rAF so fast-scroll spam doesn't fire a thousand discoverUnits calls. */
 export function observe(onNewUnits, opts) {
-  const mo = new MutationObserver(() => onNewUnits(discoverUnits()));
+  let pending = null;
+  const schedule = () => {
+    if (pending) return;
+    pending = requestAnimationFrame(() => {
+      pending = null;
+      onNewUnits(discoverUnits());
+    });
+  };
+  const mo = new MutationObserver(schedule);
   mo.observe(document.body, { childList: true, subtree: true, characterData: true });
-  return () => mo.disconnect();
+  window.addEventListener("scroll", schedule, { passive: true, capture: true });
+  // Safety timer — if the page is wholly static and scroll events happen to
+  // be swallowed by a nested scroll container, the periodic sweep still
+  // catches any deferred units the user has since scrolled near.
+  const periodic = setInterval(schedule, 2000);
+  return () => {
+    mo.disconnect();
+    window.removeEventListener("scroll", schedule, { capture: true });
+    clearInterval(periodic);
+  };
 }
