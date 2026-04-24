@@ -108,3 +108,34 @@ def chunks_of(paras: list[Paragraph], size: int) -> Iterator[list[Paragraph]]:
     """Split paragraphs into chunks suitable for one batch translation call."""
     for i in range(0, len(paras), size):
         yield paras[i:i + size]
+
+
+# ── Page rasterization ────────────────────────────────────────────────
+# pdfminer.six gives us the text; it does NOT give us the figures,
+# equations-as-images, or tables. For academic papers those are often the
+# most information-dense parts of the page. Rasterize each page and embed
+# the image so the user sees the original layout alongside the translation.
+
+def render_page_pngs(pdf_bytes: bytes, *, max_pages: int, dpi: int = 110) -> list[bytes]:
+    """Return one PNG (bytes) per page, up to `max_pages`. Default DPI of 110
+    strikes a balance: readable formulas at 100% zoom without bloating the
+    HTML. A letter-page PNG at 110 DPI is typically 60-180 KB."""
+    import pypdfium2 as pdfium
+    out: list[bytes] = []
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    try:
+        n = min(len(pdf), max_pages)
+        scale = dpi / 72.0  # pdfium scale is relative to 72 DPI
+        for i in range(n):
+            page = pdf[i]
+            try:
+                pil = page.render(scale=scale).to_pil()
+                import io
+                buf = io.BytesIO()
+                pil.save(buf, format="PNG", optimize=True)
+                out.append(buf.getvalue())
+            finally:
+                page.close()
+    finally:
+        pdf.close()
+    return out

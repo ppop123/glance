@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
-from .pdf_extract import extract_paragraphs, MAX_PAGES_HARD_CAP
+from .pdf_extract import extract_paragraphs, render_page_pngs, MAX_PAGES_HARD_CAP
 from .providers_store import ProvidersStore
 from .stats import StatsStore
 from .translator import TranslateItem, Translator, UnknownProviderError
@@ -370,6 +370,7 @@ async def public_config():
 def _render_pdf_html(
     *, src_url: str, pairs: list[tuple[int, str, str]],
     error: str | None = None, meta: dict | None = None,
+    page_images: dict[int, str] | None = None,
 ) -> str:
     """Render the bilingual reading view. `pairs` is a list of
     (page, source_text, translation). `meta` carries stats like token
@@ -379,9 +380,21 @@ def _render_pdf_html(
     esc = _html.escape
     body_chunks: list[str] = []
     last_page = -1
+    page_images = page_images or {}
     for page, src, tr in pairs:
         if page != last_page:
             body_chunks.append(f'<h2 class="pg">第 {page} 页</h2>')
+            # Render the page image BEFORE its paragraphs — pdfminer only
+            # gives us text, so figures / equations-as-images / tables are
+            # otherwise lost. The rasterized original preserves everything
+            # the user needs to visually reference while reading the Chinese.
+            img_src = page_images.get(page)
+            if img_src:
+                body_chunks.append(
+                    f'<figure class="pdf-page">'
+                    f'<img src="{img_src}" alt="第 {page} 页原图">'
+                    f'</figure>'
+                )
             last_page = page
         tr_block = (
             f'<div class="tr">{esc(tr)}</div>' if tr else
@@ -425,7 +438,13 @@ def _render_pdf_html(
      common delimiter conventions ($...$, \\(...\\), $$...$$, \\[...\\]). -->
 <script>
   window.MathJax = {{
+    // textmacros gives us proper handling of `\\_`, `\\%`, `\\$`, etc. inside
+    // `\\text{{}}`. Without it, MathJax leaves the backslash literal and the user
+    // sees "pass\\_rate" instead of "pass_rate". The LLM routinely produces
+    // `\\text{{pass\\_rate}}` when reconstructing code-ish identifiers.
+    loader: {{ load: ['[tex]/textmacros', '[tex]/ams'] }},
     tex: {{
+      packages: {{ '[+]': ['textmacros', 'ams'] }},
       inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
       displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
       processEscapes: true,
@@ -462,6 +481,10 @@ def _render_pdf_html(
   h2.pg {{ font-size: 12px; font-weight: 600; text-transform: uppercase;
     letter-spacing: .08em; color: var(--muted); margin: 30px 0 8px;
     border-top: 1px solid var(--border); padding-top: 12px; }}
+  figure.pdf-page {{ margin: 0 0 14px; border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
+  figure.pdf-page img {{ display: block; width: 100%; height: auto; }}
   .para {{ background: var(--card); border: 1px solid var(--border);
     border-radius: 10px; padding: 14px 16px; margin: 0 0 10px; }}
   .src {{ color: var(--muted); font-size: 13.5px; line-height: 1.55; }}
@@ -569,6 +592,22 @@ async def pdf_view(
         raise HTTPException(400, str(e))
 
     pairs = [(p.page, p.text, tr) for p, tr in zip(paras, result.translations)]
+
+    # Rasterize the pages we actually kept, so figures / equations-as-images /
+    # tables are preserved alongside the text translation. pypdfium2 is CPU
+    # bound → run on a worker thread. Skip silently on error; the text-only
+    # view is still useful.
+    import base64
+    page_images: dict[int, str] = {}
+    try:
+        pages_to_render = min(requested, total_pages) if requested > 0 else total_pages
+        pngs = await asyncio.to_thread(render_page_pngs, pdf_bytes,
+                                       max_pages=pages_to_render)
+        for i, png in enumerate(pngs, start=1):
+            page_images[i] = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    except Exception as e:
+        log.warning("pdf raster failed (falling back to text-only): %s", e)
+
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
     truncated = requested > 0 and requested < total_pages
     meta = {
@@ -580,7 +619,9 @@ async def pdf_view(
         "truncated": truncated,
         "src_url": src,
     }
-    return HTMLResponse(_render_pdf_html(src_url=src, pairs=pairs, meta=meta))
+    return HTMLResponse(_render_pdf_html(
+        src_url=src, pairs=pairs, meta=meta, page_images=page_images,
+    ))
 
 
 @app.post("/transcribe")
