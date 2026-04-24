@@ -326,16 +326,36 @@ async function refreshProviderList() {
           ${rightCol}
         </div>`;
     }).join("");
-    // Wire the ⋯ overflow menus
+    // Wire the ⋯ overflow menus. Menu is position:fixed (escapes any
+    // ancestor overflow/stacking); we compute viewport coordinates each
+    // time it opens from the button's bounding rect. Flip upward if the
+    // row is near the viewport bottom so the menu doesn't fall offscreen.
+    const positionMenu = (btn, menu) => {
+      const b = btn.getBoundingClientRect();
+      menu.style.minWidth = "140px";
+      // Make sure we can measure with display:block + visible:hidden first
+      menu.style.visibility = "hidden";
+      menu.classList.add("is-open");
+      const m = menu.getBoundingClientRect();
+      const vw = window.innerWidth, vh = window.innerHeight;
+      let top = b.bottom + 4;
+      if (top + m.height > vh - 8) top = Math.max(8, b.top - m.height - 4);
+      let left = b.right - m.width;
+      if (left < 8) left = 8;
+      if (left + m.width > vw - 8) left = vw - m.width - 8;
+      menu.style.top = `${top}px`;
+      menu.style.left = `${left}px`;
+      menu.style.visibility = "";
+    };
     host.querySelectorAll(".llm-provider").forEach(row => {
       const menuBtn = row.querySelector("[data-menu]");
       const menu = row.querySelector("[data-menu-list]");
       if (menuBtn && menu) {
         menuBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
-          // Close any other open menu first
-          host.querySelectorAll(".llm-menu.is-open").forEach(m => { if (m !== menu) m.classList.remove("is-open"); });
-          menu.classList.toggle("is-open");
+          const wasOpen = menu.classList.contains("is-open");
+          host.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
+          if (!wasOpen) positionMenu(menuBtn, menu);
         });
         menu.addEventListener("click", async (ev) => {
           const b = ev.target.closest("button[data-act]");
@@ -353,10 +373,19 @@ async function refreshProviderList() {
         });
       }
     });
-    // Click-anywhere-else closes any open menu
-    document.addEventListener("click", () => {
-      host.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
-    }, { once: true });
+    // Close any open menu on outside click / scroll / resize (position:fixed
+    // keeps its spot on scroll which would leave the menu stranded from its
+    // button as the page scrolls, so just close instead of repositioning).
+    // Register global listeners ONCE — refreshProviderList() can run many
+    // times, don't accumulate duplicates.
+    if (!window.__fanyiMenuListenersAttached) {
+      const closeAll = () =>
+        document.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
+      document.addEventListener("click", closeAll);
+      window.addEventListener("scroll", closeAll, true);
+      window.addEventListener("resize", closeAll);
+      window.__fanyiMenuListenersAttached = true;
+    }
   } catch (e) {
     host.innerHTML = `<em class="hint">加载失败：${escHtml(String(e?.message || e))}</em>`;
   }
