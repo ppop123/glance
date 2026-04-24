@@ -101,6 +101,30 @@ function extractPlainText(el) {
   return (el.textContent || "").replace(/\s+/g, " ").trim();
 }
 
+/** Bulk-retry every element on the page that has a FAIL_ATTR set. Clears
+ * fail state + marks + chip, then re-queues via translateUnits. Invoked
+ * from the pill when it's in failure state and from the FAB menu
+ * "重试失败的" item. Returns the count of elements that were re-queued
+ * so callers can log / surface progress. */
+export function retryFailed() {
+  const failed = Array.from(document.querySelectorAll(`[${FAIL_ATTR}]`));
+  if (!failed.length) return 0;
+  const units = [];
+  for (const el of failed) {
+    if (!el.isConnected) continue;
+    el.removeAttribute(FAIL_ATTR);
+    el.removeAttribute(MARK_ATTR);
+    el.removeAttribute("data-fanyi-src");
+    const chip = el.querySelector(":scope > .fanyi-failed-msg");
+    if (chip) chip.remove();
+    const text = extractPlainText(el);
+    if (text.length >= 2) units.push({ el, text });
+  }
+  console.info("[fanyi] retry: re-queuing %d failed elements", units.length);
+  if (units.length) translateUnits(units);
+  return units.length;
+}
+
 /** Treat whitespace-equivalent strings as "no translation happened". LLMs often
  * echo source untouched when content is all code, identifiers, or proper nouns.
  * Normalizing collapses spacing and Unicode fullwidth punctuation that's
@@ -151,6 +175,7 @@ const PILL_DONE_LINGER_MS = 1200;
 let pillTotal = 0;
 let pillDone = 0;
 let pillFailed = 0;   // how many of pillDone were failures (for the render)
+let pillCached = 0;   // how many of pillDone came from the server cache
 let pillEl = null;
 let pillShowTimer = null;
 let pillHideTimer = null;
@@ -165,7 +190,20 @@ function pillEnsure() {
   pillEl.setAttribute("aria-live", "polite");
   pillEl.title = "点击取消翻译";
   pillEl.innerHTML = `<span class="fanyi-progress-spin"></span><span class="fanyi-progress-text">翻译中</span>`;
-  pillEl.addEventListener("click", () => disable());
+  // Click behavior depends on state:
+  //   - Error state (any failures logged this burst)  → retry failed items.
+  //   - Normal translating / done state              → cancel translation.
+  // Critical for "long thread ran out of steam halfway and I want it to
+  // resume" — without this, user's only recourse was toggling the whole
+  // extension off/on which wipes completed work.
+  pillEl.addEventListener("click", () => {
+    if (pillFailed > 0) {
+      const n = retryFailed();
+      if (n === 0) pillReset();
+    } else {
+      disable();
+    }
+  });
   document.documentElement.appendChild(pillEl);
   // Trigger entrance animation (opacity / translate) on next frame so the
   // initial styles take effect before we add the reveal class.
@@ -185,23 +223,27 @@ function pillRender() {
   const remaining = pillTotal - pillDone;
   const ok = pillDone - pillFailed;
   const failSuffix = pillFailed > 0 ? ` · 失败 ${pillFailed}` : "";
+  // Surface cache hits — users asking "are my translations being saved?" can
+  // watch this number climb when they re-translate a page and trust the cache
+  // is warm. Only shown when non-zero so it doesn't clutter clean bursts.
+  const cacheSuffix = pillCached > 0 ? ` · 缓存 ${pillCached}` : "";
   pillEl.classList.toggle("fanyi-progress-err", pillFailed > 0);
   if (pillTotal > 0 && remaining <= 0) {
     pillEl.classList.add("fanyi-progress-done");
     if (pillFailed > 0 && ok === 0) {
-      pillEl.title = "翻译失败 · 点击关闭 · 检查 API Key / 服务商可用性";
-      txt.textContent = `翻译失败 ${pillFailed}`;
+      pillEl.title = "翻译全部失败 · 点击重试（检查 API Key / 服务商可用性）";
+      txt.textContent = `翻译失败 ${pillFailed} · 点击重试`;
     } else if (pillFailed > 0) {
-      pillEl.title = "部分失败 · 点击关闭";
-      txt.textContent = `已完成 ${ok}${failSuffix}`;
+      pillEl.title = "部分失败 · 点击重试剩余的";
+      txt.textContent = `已完成 ${ok}${failSuffix}${cacheSuffix} · 点击重试`;
     } else {
       pillEl.title = "翻译完成";
-      txt.textContent = `已完成 ${pillTotal}`;
+      txt.textContent = `已完成 ${pillTotal}${cacheSuffix}`;
     }
   } else {
     pillEl.classList.remove("fanyi-progress-done");
     pillEl.title = "点击取消翻译";
-    txt.textContent = `翻译中 ${pillDone}/${pillTotal}${failSuffix}`;
+    txt.textContent = `翻译中 ${pillDone}/${pillTotal}${failSuffix}${cacheSuffix}`;
   }
 }
 
@@ -221,10 +263,11 @@ function pillAdd(n) {
   }, PILL_SHOW_DELAY_MS);
 }
 
-function pillAdvance(n, failed = 0) {
+function pillAdvance(n, failed = 0, cached = 0) {
   if (n <= 0) return;
   pillDone += n;
   if (failed > 0) pillFailed += failed;
+  if (cached > 0) pillCached += cached;
   // Force the pill to reveal if it was still in the lazy-delay window — a
   // silent "done" with failures is the exact bug we're fixing.
   if (failed > 0 && !pillEl && pillShowTimer) {
@@ -237,14 +280,16 @@ function pillAdvance(n, failed = 0) {
     if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
     if (pillEl) {
       if (pillHideTimer) clearTimeout(pillHideTimer);
-      // Keep failure state on screen longer so the user actually notices.
-      const linger = pillFailed > 0 ? PILL_DONE_LINGER_MS * 4 : PILL_DONE_LINGER_MS;
+      // Keep failure state on screen longer so the user actually notices and
+      // has a chance to click "点击重试" before the pill slides away.
+      const linger = pillFailed > 0 ? PILL_DONE_LINGER_MS * 6 : PILL_DONE_LINGER_MS;
       pillHideTimer = setTimeout(pillReset, linger);
     } else {
       // Quietly reset counters — nothing was ever shown.
       pillTotal = 0;
       pillDone = 0;
       pillFailed = 0;
+      pillCached = 0;
     }
   }
 }
@@ -253,6 +298,7 @@ function pillReset() {
   pillTotal = 0;
   pillDone = 0;
   pillFailed = 0;
+  pillCached = 0;
   if (pillEl) { pillEl.remove(); pillEl = null; }
   if (pillShowTimer) { clearTimeout(pillShowTimer); pillShowTimer = null; }
   if (pillHideTimer) { clearTimeout(pillHideTimer); pillHideTimer = null; }
@@ -351,11 +397,13 @@ async function translateUnits(units) {
           if (!state.enabled || !data?.items) return;
           let n = 0;
           let nFailed = 0;
+          let nCached = 0;
           for (const it of data.items) {
             const els = fanout.get(it.i) || [];
             for (const u of els) {
               n++;
               if (it.failed) nFailed++;
+              else if (it.cached) nCached++;
               if (!u.el.isConnected) continue;
               if (it.failed) {
                 if (markFailure(u.el)) u.el.removeAttribute(MARK_ATTR);
@@ -372,7 +420,7 @@ async function translateUnits(units) {
             }
           }
           applied += n;
-          pillAdvance(n, nFailed);
+          pillAdvance(n, nFailed, nCached);
         },
       }
     );
@@ -611,9 +659,18 @@ function fabToggleMenu() {
   const subtitleRow = hasVideo
     ? `<button data-act="subtitle">生成字幕</button>`
     : "";
+  // Retry-failed entry — only surfaced when the page actually has failed
+  // units. Same count the pill surfaces but accessible outside the pill's
+  // 7-second linger window. Essential on long threads where many items
+  // hit upstream 429/500 and the user wants to resume without nuking.
+  const failedCount = document.querySelectorAll(`[${FAIL_ATTR}]`).length;
+  const retryRow = failedCount > 0
+    ? `<button data-act="retry-failed">重试失败的 (${failedCount})</button>`
+    : "";
   fabMenuEl.innerHTML = `
     <button data-act="toggle">${state.enabled ? "关闭翻译" : "翻译此页"}</button>
     <button data-act="auto">${isAuto ? "不再自动翻译本站" : "始终自动翻译本站"}</button>
+    ${retryRow}
     ${subtitleRow}
     <button data-act="options">设置…</button>
     <button data-act="hide">隐藏悬浮球</button>
@@ -639,6 +696,10 @@ async function fabOnMenuClick(ev) {
     if (next.includes(host) && !state.enabled) { await enable(); fabRender(); }
   }
   if (act === "options") { chrome.runtime.sendMessage({ type: "fanyi:open-options" }).catch(() => chrome.runtime.openOptionsPage?.()); }
+  if (act === "retry-failed") {
+    const n = retryFailed();
+    console.info("[fanyi] FAB retry-failed triggered, re-queued %d", n);
+  }
   if (act === "subtitle") {
     // Pull the user's subtitle defaults (set in options page) so behavior
     // matches their preferences. Fallback to baked-in defaults.
