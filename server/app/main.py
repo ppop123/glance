@@ -418,6 +418,27 @@ def _render_pdf_html(
 <head>
 <meta charset="utf-8">
 <title>{esc(title)} · 翻译</title>
+<!-- MathJax renders LaTeX in translations. PDF-extracted math usually loses
+     structure (subscripts / superscripts flatten), but when the LLM recognizes
+     a formula and reconstructs it as `$...$` LaTeX, we need a renderer or
+     the user just sees literal dollar signs and backslashes. Configure both
+     common delimiter conventions ($...$, \\(...\\), $$...$$, \\[...\\]). -->
+<script>
+  window.MathJax = {{
+    tex: {{
+      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+      displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+      processEscapes: true,
+    }},
+    options: {{
+      // Only scan translation blocks — the source is raw PDF text that
+      // might contain incidental dollar signs we don't want treated as math.
+      processHtmlClass: 'tr',
+      ignoreHtmlClass: 'src',
+    }},
+  }};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
 <style>
   :root {{ color-scheme: light dark;
     --bg:#f6f8fa; --card:#fff; --text:#1f2328; --muted:#656d76;
