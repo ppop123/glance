@@ -450,7 +450,10 @@
         flex-direction: column;
         border: 1px solid var(--border);
         border-radius: var(--radius-input);
-        overflow: hidden;
+        /* No overflow:hidden — the per-row ⋯ menu is position:absolute and
+           would otherwise get clipped at the list boundary. Rows have only
+           a border-top separator (no background) so the outer border-radius
+           still clips visually even without an overflow-hidden wrapper. */
         background: var(--surface);
       }
       .llm-list:empty::before {
