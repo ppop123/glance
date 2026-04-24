@@ -311,7 +311,13 @@ function renderInlineEdit(panel, provider, row) {
     </div>
     <div class="llm-edit-row">
       <label>模型列表</label>
-      <textarea class="llm-edit-textarea" data-field="models" rows="3" spellcheck="false">${esc((provider.models || []).join('\n'))}</textarea>
+      <div>
+        <textarea class="llm-edit-textarea" data-field="models" rows="3" spellcheck="false">${esc((provider.models || []).join('\n'))}</textarea>
+        <div class="llm-edit-fetch-bar">
+          <button type="button" class="llm-row-btn" data-inline-act="fetch-models">拉取最新</button>
+          <span class="llm-edit-fetch-status" data-fetch-status></span>
+        </div>
+      </div>
     </div>
     <div class="llm-edit-actions">
       <span class="llm-edit-status" data-status></span>
@@ -348,6 +354,44 @@ function renderInlineEdit(panel, provider, row) {
     panel.innerHTML = "";
     const editBtn = row.querySelector('button[data-act="edit"]');
     if (editBtn) editBtn.textContent = "编辑";
+  });
+  panel.querySelector('[data-inline-act="fetch-models"]').addEventListener("click", async () => {
+    const fetchStatus = panel.querySelector("[data-fetch-status]");
+    const setFetchStatus = (msg, kind) => {
+      fetchStatus.textContent = msg || "";
+      fetchStatus.classList.remove("ok", "err");
+      if (kind) fetchStatus.classList.add(kind);
+    };
+    setFetchStatus("拉取中…", null);
+    try {
+      const payload = {
+        base_url: get("base_url").trim() || provider.base_url,
+        api_key: get("api_key"),    // empty string → server falls back to stored key
+        name: provider.name,
+      };
+      const r = await serverFetch("/providers/list-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        setFetchStatus(`✗ ${j.error || '拉取失败'}`, "err");
+        return;
+      }
+      // Merge: keep existing lines the user has, add new ones not in the list.
+      const existing = new Set(get("models").split("\n").map(s => s.trim()).filter(Boolean));
+      const fetched = j.models || [];
+      const merged = [...existing];
+      let added = 0;
+      for (const m of fetched) {
+        if (!existing.has(m)) { merged.push(m); added++; }
+      }
+      panel.querySelector('[data-field="models"]').value = merged.join("\n");
+      setFetchStatus(`✓ 拉到 ${j.models.length} 个，${added > 0 ? `新增 ${added}` : '无新增'}`, "ok");
+    } catch (e) {
+      setFetchStatus(`✗ ${String(e?.message || e)}`, "err");
+    }
   });
   panel.querySelector('[data-inline-act="test"]').addEventListener("click", async () => {
     setStatus("测试中…", null);
