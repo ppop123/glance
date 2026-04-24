@@ -289,6 +289,117 @@ function pastelTextFor(name) {
   return `hsl(${hue} 60% 28%)`;
 }
 
+/** Render the inline edit form inside `panel`, pre-filled with `provider`'s
+ * values. Wire Save / Cancel / Test buttons. Replaces the earlier popup-menu
+ * flow that suffered from z-index / hit-test issues with `position:fixed`
+ * and outside `<section>` siblings. */
+function renderInlineEdit(panel, provider, row) {
+  const esc = escHtml;
+  panel.innerHTML = `
+    <div class="llm-edit-row">
+      <label>显示名</label>
+      <input class="llm-edit-input" data-field="label" type="text" value="${esc(provider.label || '')}">
+    </div>
+    <div class="llm-edit-row">
+      <label>API Key</label>
+      <input class="llm-edit-input llm-edit-input--mono" data-field="api_key" type="password"
+             placeholder="${provider.has_api_key ? '（已设置，不动则保留）' : 'sk-…'}" autocomplete="off">
+    </div>
+    <div class="llm-edit-row">
+      <label>端点</label>
+      <input class="llm-edit-input llm-edit-input--mono" data-field="base_url" type="url" value="${esc(provider.base_url || '')}">
+    </div>
+    <div class="llm-edit-row">
+      <label>模型列表</label>
+      <textarea class="llm-edit-textarea" data-field="models" rows="3" spellcheck="false">${esc((provider.models || []).join('\n'))}</textarea>
+    </div>
+    <div class="llm-edit-actions">
+      <span class="llm-edit-status" data-status></span>
+      <button type="button" class="llm-row-btn" data-inline-act="cancel">取消</button>
+      <button type="button" class="llm-row-btn" data-inline-act="test">测试连接</button>
+      <button type="button" class="llm-row-btn" data-inline-act="save" style="background:var(--brand);color:#fff;border-color:var(--brand);">保存</button>
+    </div>
+  `;
+  const get = (field) => panel.querySelector(`[data-field="${field}"]`)?.value || "";
+  const status = panel.querySelector("[data-status]");
+  const setStatus = (msg, kind) => {
+    status.textContent = msg || "";
+    status.classList.remove("ok", "err");
+    if (kind) status.classList.add(kind);
+  };
+  const collect = () => {
+    const api_key = get("api_key");
+    const payload = {
+      name: provider.name,
+      label: get("label").trim(),
+      base_url: get("base_url").trim(),
+      protocol: provider.protocol || "openai",
+      models: get("models").split("\n").map(s => s.trim()).filter(Boolean),
+      enabled: true,
+      timeout_s: provider.timeout_s || 60,
+    };
+    // Only include api_key when the user actually typed something — empty
+    // field means "keep the existing key".
+    if (api_key) payload.api_key = api_key;
+    return payload;
+  };
+  panel.querySelector('[data-inline-act="cancel"]').addEventListener("click", () => {
+    row.classList.remove("is-editing");
+    panel.innerHTML = "";
+    const editBtn = row.querySelector('button[data-act="edit"]');
+    if (editBtn) editBtn.textContent = "编辑";
+  });
+  panel.querySelector('[data-inline-act="test"]').addEventListener("click", async () => {
+    setStatus("测试中…", null);
+    try {
+      const body = collect();
+      // /providers/test needs an api_key; if user didn't type one, borrow
+      // existing via saved state (server side falls back to stored key if
+      // omitted — but /providers/test is stateless, so we skip testing if
+      // no key was typed and existing key isn't exposed).
+      if (!body.api_key && provider.has_api_key) {
+        setStatus("如需测试请先填入 API Key（已存在密钥不会被读出）", "err");
+        return;
+      }
+      const r = await serverFetch("/providers/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await r.json();
+      if (j.ok) setStatus(`✓ ${j.sample || '连通'} · ${j.latency_ms}ms`, "ok");
+      else setStatus(`✗ ${j.error || '失败'}`, "err");
+    } catch (e) {
+      setStatus(`✗ ${String(e?.message || e)}`, "err");
+    }
+  });
+  panel.querySelector('[data-inline-act="save"]').addEventListener("click", async () => {
+    setStatus("保存中…", null);
+    try {
+      const body = collect();
+      if (!body.label || !body.base_url) {
+        setStatus("显示名和端点不能为空", "err");
+        return;
+      }
+      if (!body.models.length) {
+        setStatus("至少填一个模型 id", "err");
+        return;
+      }
+      const r = await serverFetch("/providers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const err = await r.text().catch(() => "");
+        setStatus(`✗ ${err || r.statusText}`, "err");
+        return;
+      }
+      await refreshProviderList();
+    } catch (e) {
+      setStatus(`✗ ${String(e?.message || e)}`, "err");
+    }
+  });
+  // Focus the first field so the user can immediately start editing.
+  panel.querySelector('[data-field="label"]')?.focus();
+}
+
 async function refreshProviderList() {
   const host = $("#providerList");
   if (!host) return;
@@ -305,12 +416,9 @@ async function refreshProviderList() {
         ? `<span class="llm-chip llm-chip--config"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2" y="4.5" width="6" height="4" rx="1"/><path d="M3.5 4.5V3a1.5 1.5 0 1 1 3 0v1.5"/></svg>config.yaml</span>`
         : `<span class="llm-chip llm-chip--user">用户添加</span>`;
       const rightCol = p.source === "user"
-        ? `<div class="llm-provider__right">
-             <button type="button" class="llm-menu-btn" aria-label="更多" data-menu>⋯</button>
-             <div class="llm-menu" data-menu-list>
-               <button type="button" class="llm-menu__item" data-act="edit">编辑</button>
-               <button type="button" class="llm-menu__item llm-menu__item--danger" data-act="delete">删除</button>
-             </div>
+        ? `<div class="llm-row-actions">
+             <button type="button" class="llm-row-btn" data-act="edit">编辑</button>
+             <button type="button" class="llm-row-btn llm-row-btn--danger" data-act="delete">删除</button>
            </div>`
         : `<span class="llm-menu-hint">config.yaml 管理</span>`;
       return `
@@ -324,68 +432,54 @@ async function refreshProviderList() {
             <div class="llm-provider__line2">${escHtml(p.base_url)} <span class="sep">·</span> ${p.models.length} 个模型</div>
           </div>
           ${rightCol}
+          <div class="llm-provider__edit" data-edit-panel></div>
         </div>`;
     }).join("");
-    // Wire the ⋯ overflow menus. Menu is position:fixed (escapes any
-    // ancestor overflow/stacking); we compute viewport coordinates each
-    // time it opens from the button's bounding rect. Flip upward if the
-    // row is near the viewport bottom so the menu doesn't fall offscreen.
-    const positionMenu = (btn, menu) => {
-      const b = btn.getBoundingClientRect();
-      menu.style.minWidth = "140px";
-      // Make sure we can measure with display:block + visible:hidden first
-      menu.style.visibility = "hidden";
-      menu.classList.add("is-open");
-      const m = menu.getBoundingClientRect();
-      const vw = window.innerWidth, vh = window.innerHeight;
-      let top = b.bottom + 4;
-      if (top + m.height > vh - 8) top = Math.max(8, b.top - m.height - 4);
-      let left = b.right - m.width;
-      if (left < 8) left = 8;
-      if (left + m.width > vw - 8) left = vw - m.width - 8;
-      menu.style.top = `${top}px`;
-      menu.style.left = `${left}px`;
-      menu.style.visibility = "";
-    };
+    // Wire the inline-edit actions. No more popup menu — click "编辑" and
+    // the row expands with the form inline. Side-effects we dodge this
+    // way: no z-index fights with later sections, no position:fixed
+    // coordinate math, no click-outside-to-close timing surprises.
     host.querySelectorAll(".llm-provider").forEach(row => {
-      const menuBtn = row.querySelector("[data-menu]");
-      const menu = row.querySelector("[data-menu-list]");
-      if (menuBtn && menu) {
-        menuBtn.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          const wasOpen = menu.classList.contains("is-open");
-          host.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
-          if (!wasOpen) positionMenu(menuBtn, menu);
-        });
-        menu.addEventListener("click", async (ev) => {
-          const b = ev.target.closest("button[data-act]");
-          if (!b) return;
-          ev.stopPropagation();
-          menu.classList.remove("is-open");
-          const name = row.dataset.name;
-          const provider = rows.find(x => x.name === name);
-          if (b.dataset.act === "edit" && provider) openProviderFormForEdit(provider);
-          else if (b.dataset.act === "delete" && provider) {
-            if (!confirm(`删除服务商 "${provider.label}"？`)) return;
-            await serverFetch(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
-            await refreshProviderList();
+      const editBtn = row.querySelector('button[data-act="edit"]');
+      const delBtn = row.querySelector('button[data-act="delete"]');
+      const panel = row.querySelector("[data-edit-panel]");
+      const name = row.dataset.name;
+      const provider = rows.find(x => x.name === name);
+      if (!provider) return;
+      if (editBtn && panel) {
+        editBtn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          const open = row.classList.contains("is-editing");
+          // Close any OTHER row that's being edited — keep at most one
+          // open at a time to avoid visual clutter.
+          host.querySelectorAll(".llm-provider.is-editing").forEach(r => {
+            if (r !== row) {
+              r.classList.remove("is-editing");
+              const p = r.querySelector("[data-edit-panel]");
+              if (p) p.innerHTML = "";
+            }
+          });
+          if (open) {
+            row.classList.remove("is-editing");
+            panel.innerHTML = "";
+          } else {
+            renderInlineEdit(panel, provider, row);
+            row.classList.add("is-editing");
+            editBtn.textContent = "取消";
+            // Scroll the row into view so the inline form is visible.
+            row.scrollIntoView({ block: "nearest", behavior: "smooth" });
           }
         });
       }
+      if (delBtn) {
+        delBtn.addEventListener("click", async (ev) => {
+          ev.preventDefault();
+          if (!confirm(`删除服务商 "${provider.label}"？`)) return;
+          await serverFetch(`/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+          await refreshProviderList();
+        });
+      }
     });
-    // Close any open menu on outside click / scroll / resize (position:fixed
-    // keeps its spot on scroll which would leave the menu stranded from its
-    // button as the page scrolls, so just close instead of repositioning).
-    // Register global listeners ONCE — refreshProviderList() can run many
-    // times, don't accumulate duplicates.
-    if (!window.__fanyiMenuListenersAttached) {
-      const closeAll = () =>
-        document.querySelectorAll(".llm-menu.is-open").forEach(m => m.classList.remove("is-open"));
-      document.addEventListener("click", closeAll);
-      window.addEventListener("scroll", closeAll, true);
-      window.addEventListener("resize", closeAll);
-      window.__fanyiMenuListenersAttached = true;
-    }
   } catch (e) {
     host.innerHTML = `<em class="hint">加载失败：${escHtml(String(e?.message || e))}</em>`;
   }
