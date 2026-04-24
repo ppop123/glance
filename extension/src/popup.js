@@ -92,19 +92,37 @@ async function refreshStatus() {
 
 let _providers = [];
 
+const CACHED_CONFIG_KEY = "lastServerConfig";
+
 async function refreshServer() {
   const dot = $("#serverDot");
+  let c = null;
   try {
-    const c = await getConfig();
+    c = await getConfig();
+    // Cache for next offline/restart window — avoids the "dropdown is empty
+    // because server was down for 3s during a restart" surprise. The cache
+    // holds no secrets; /config already hides api_key per design.
+    await chrome.storage.local.set({ [CACHED_CONFIG_KEY]: c }).catch(() => {});
     dot.className = "dot ok";
     $("#serverText").innerHTML = `<code>${escHtml(c.default_model)}</code> → <code>${escHtml(c.default_target)}</code>`;
+  } catch {
+    // Fall back to last-known config so the provider/model dropdowns stay
+    // populated with what the user had. We still mark the dot as an error
+    // so the disconnect is visible.
+    const cached = (await chrome.storage.local.get({ [CACHED_CONFIG_KEY]: null }).catch(() => ({})))[CACHED_CONFIG_KEY];
+    dot.className = "dot err";
+    if (cached) {
+      c = cached;
+      $("#serverText").textContent = "服务器连接失败 · 显示上次缓存";
+    } else {
+      $("#serverText").textContent = "服务器连接失败";
+    }
+  }
+  if (c) {
     _providers = c.providers || [];
     const prefs = await chrome.storage.sync.get({ model: null, targetLang: null });
     populateProviderAndModel(prefs.model || c.default_model);
     $("#targetLang").value = prefs.targetLang || c.default_target;
-  } catch {
-    dot.className = "dot err";
-    $("#serverText").textContent = "服务器连接失败";
   }
   try {
     const s = await getCacheStats();
