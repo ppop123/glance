@@ -565,40 +565,93 @@
       }
       .llm-menu-hint svg { width: 11px; height: 11px; }
 
-      .llm-menu {
-        /* position: fixed so the menu escapes any ancestor's overflow / stacking
-           context — earlier versions had it `position: absolute` inside the
-           list row, and later `<section>` siblings would paint on top and
-           swallow clicks. Coordinates are set in JS each time it opens. */
-        position: fixed;
-        min-width: 140px;
-        background: var(--surface);
+      /* ---------- inline row actions (replaces the popup ⋯ menu) ---------- */
+      .llm-row-actions {
+        display: inline-flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .llm-row-btn {
+        appearance: none;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: var(--radius-input);
+        cursor: pointer;
+        transition: background .12s, color .12s, border-color .12s;
+      }
+      .llm-row-btn:hover {
+        background: var(--surface-sunken);
+        color: var(--text);
+        border-color: var(--border);
+      }
+      .llm-row-btn--danger { color: var(--danger); }
+      .llm-row-btn--danger:hover {
+        background: var(--danger-bg, rgba(207,34,46,.08));
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+
+      /* ---------- inline edit panel (grid row spanning full width) ---------- */
+      .llm-provider__edit {
+        grid-column: 1 / -1;
+        padding: 14px 2px 6px;
+        margin-top: 6px;
+        border-top: 1px solid var(--border);
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .llm-provider.is-editing .llm-provider__edit { display: flex; }
+      .llm-provider.is-editing {
+        background: var(--surface-sunken);
+      }
+      .llm-edit-row {
+        display: grid;
+        grid-template-columns: 80px 1fr;
+        gap: 10px;
+        align-items: start;
+      }
+      .llm-edit-row > label {
+        font-size: 12px;
+        color: var(--muted);
+        padding-top: 8px;
+      }
+      .llm-edit-input, .llm-edit-textarea {
+        width: 100%;
+        font: inherit;
+        font-size: 13px;
+        padding: 6px 10px;
         border: 1px solid var(--border);
         border-radius: var(--radius-input);
-        box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-        padding: 4px;
-        z-index: 9999;
-        display: none;
-      }
-      .llm-menu.is-open { display: block; }
-      .llm-menu__item {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        width: 100%;
-        background: transparent;
-        border: 0;
-        text-align: left;
-        font-family: inherit;
-        font-size: 13px;
+        background: var(--surface);
         color: var(--text);
-        padding: 6px 10px;
-        border-radius: 4px;
-        cursor: pointer;
       }
-      .llm-menu__item:hover { background: var(--surface-sunken); }
-      .llm-menu__item--danger { color: var(--danger); }
-      .llm-menu__item--danger:hover { background: var(--danger-bg); }
+      .llm-edit-input--mono, .llm-edit-textarea {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+      }
+      .llm-edit-input:focus, .llm-edit-textarea:focus {
+        outline: 2px solid color-mix(in oklab, var(--brand) 25%, transparent);
+        border-color: var(--brand);
+      }
+      .llm-edit-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding-top: 4px;
+      }
+      .llm-edit-status {
+        font-size: 11px;
+        color: var(--muted);
+        align-self: center;
+        margin-right: auto;
+      }
+      .llm-edit-status.ok { color: var(--success); }
+      .llm-edit-status.err { color: var(--danger); }
 
       /* ---------- optgroup polish ---------- */
       .llm-select optgroup { font-style: normal; font-weight: 600; color: var(--muted); }
