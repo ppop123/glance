@@ -545,20 +545,53 @@ async def pdf_view(
     if len(src) > 2000:
         raise HTTPException(400, "src URL too long")
 
-    # 1) Download the PDF. Follow redirects (arxiv /pdf/<id> → CDN).
+    # Rewrite common blob-viewer URLs to their raw-bytes equivalents. Users
+    # often hit these by copying from an address bar:
+    #   Hugging Face  /blob/  →  /resolve/   (other path segs unchanged)
+    #   GitHub        /blob/  →  /raw/       (user/repo/blob/ref/path → /raw/)
+    # If rewritten, we use the new URL for download but keep the original in
+    # the viewer header so the "查看原 PDF" link still takes them to the page
+    # they expected.
+    fetch_src = src
+    import re
+    if re.match(r"^https?://(?:[\w-]+\.)?huggingface\.co/.+/blob/", src):
+        fetch_src = src.replace("/blob/", "/resolve/", 1)
+    elif re.match(r"^https?://(?:[\w-]+\.)?github\.com/[^/]+/[^/]+/blob/", src):
+        fetch_src = src.replace("/blob/", "/raw/", 1)
+
+    # 1) Download the PDF. Follow redirects (arxiv /pdf/<id> → CDN,
+    # Hugging Face /resolve/ → lfs CDN).
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-            r = await c.get(src)
+            r = await c.get(fetch_src)
             r.raise_for_status()
-            content_type = r.headers.get("content-type", "")
-            if "pdf" not in content_type.lower() and not src.lower().endswith(".pdf"):
-                # Be lenient — some sites serve application/octet-stream for PDFs.
-                log.warning("/pdf/view: unexpected content-type %r for %s", content_type, src)
             pdf_bytes = r.content
     except httpx.HTTPError as e:
         return HTMLResponse(
             _render_pdf_html(src_url=src, pairs=[], error=f"下载 PDF 失败：{e}"),
             status_code=502,
+        )
+
+    # 2) Validate — must actually be a PDF. pdfminer's "No /Root object!"
+    # error is cryptic; users need to know they hit a blob-viewer HTML page
+    # or a login wall. Real PDFs always start with %PDF- within the first
+    # 1 KB (some CDNs prepend a UTF-8 BOM or a few whitespace bytes).
+    head = pdf_bytes[:1024]
+    if b"%PDF-" not in head:
+        hint = ""
+        if head.lstrip().startswith(b"<"):
+            if "huggingface.co" in src:
+                hint = " — Hugging Face 页面上要用 /resolve/main/ 而不是 /blob/main/"
+            elif "github.com" in src:
+                hint = " — GitHub 页面上要用 raw.githubusercontent.com 或 /raw/ 路径"
+            else:
+                hint = " — 地址返回的是 HTML 页面而不是 PDF 字节，很多站点的 /blob/ 只是预览页"
+        return HTMLResponse(
+            _render_pdf_html(
+                src_url=src, pairs=[],
+                error=f"下载到的不是 PDF 文件（{len(pdf_bytes):,} 字节）{hint}",
+            ),
+            status_code=415,
         )
 
     if len(pdf_bytes) > 40 * 1024 * 1024:
