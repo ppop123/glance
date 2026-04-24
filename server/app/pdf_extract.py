@@ -97,14 +97,21 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
             # "DeepSeek-V4-\nPro" where it's already an alphabetic class).
             raw = re.sub(r"([a-z])-\n([a-z])", r"\1\2", raw)      # (1) join
             raw = re.sub(r"-\n", "-", raw)                        # (2) strip \n, keep -
-            # Join the rest of the soft line breaks inside a paragraph. The
-            # `.!?` lookbehind preserves sentence terminators so the paragraph
-            # splitter below still fires at real paragraph boundaries.
-            raw = re.sub(r"(?<![.!?])\n(?!\n)", " ", raw)
+            # Join ALL single line breaks inside a paragraph — including those
+            # that follow a sentence terminator. Earlier the regex preserved
+            # `.\n` to "let the paragraph splitter break on sentence ends",
+            # but pdfminer puts a `\n` after EVERY visual line, including
+            # mid-bullet wrap-arounds, so that broke bullet items into
+            # several "paragraphs" — one per sentence — and the user saw
+            # the last sentence look truncated when the bullet body actually
+            # continued in the next chunk. Only blank lines (\n\n+) are
+            # treated as real paragraph boundaries below.
+            raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
             # Tidy up any doubled spaces left by the joins.
             raw = re.sub(r"  +", " ", raw)
-            # Split on blank lines — pdfminer uses them to delimit paragraph runs
-            for chunk in raw.split("\n"):
+            # Split on blank lines only — that's pdfminer's actual paragraph
+            # boundary signal, surviving the earlier soft-break join.
+            for chunk in re.split(r"\n\s*\n+", raw):
                 t = _normalize(chunk)
                 if not t or len(t) < MIN_PARA_CHARS:
                     continue
@@ -113,7 +120,70 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
                 # Skip obvious standalone refs-block / citation dump paragraphs?
                 # For now keep them — the LLM handles them fine.
                 out.append(Paragraph(page=page_idx, text=t))
-    return out
+
+    # Post-pass: merge fragment paragraphs that look like a single mathematical
+    # expression split across pdfminer LTTextBoxes. Equations especially get
+    # split because the typesetter places different lines (or sub/superscripts)
+    # in separate text boxes; the result is a paragraph that ends mid-formula
+    # and a follow-up that starts with `)` / `+` / `,` / `=` etc. — clearly
+    # a continuation rather than a new thought. Merge them with a single space
+    # so the LLM sees one coherent unit.
+    return _merge_continuation_fragments(out)
+
+
+# Lines starting with these chars are almost always continuations of a
+# preceding expression or list, not the start of a fresh thought. Math
+# operators, closing brackets, conjunctions in lowercase — never the start
+# of a new sentence in well-edited prose.
+_MATH_CONTINUATION = re.compile(r"^[\s]*[)\]}+,;=·×→←↔≈≤≥<>·•∈∉⊂⊆∩∪]")
+# Lines ending without one of these terminators MIGHT be continuations.
+_TERMINATOR_RE = re.compile(r"[.!?。！？:：]\s*[\"”')\]]?\s*$")
+# Caption / heading prefixes — these are NEW units, never continuations.
+_NEW_UNIT_PREFIX = re.compile(
+    r"^(?:Figure|Fig\.|Table|Algorithm|Equation|Eq\.|Lemma|Theorem|Corollary|Proposition|Definition|Remark|"
+    r"\d+(?:\.\d+)*\s+[A-Z]|"  # "3.1 Introduction"
+    r"图\s*\d|表\s*\d|算法\s*\d|定理|引理|推论|命题|定义|备注)"
+)
+
+
+def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
+    """Stitch back fragments that pdfminer separated into different LTTextBoxes
+    but that visually + semantically belong together: equations split across
+    boxes, prose mid-sentence carrying onto the next box, bullets interrupted
+    by an inline figure caption, etc.
+
+    Strategy: keep an index pointer to the last "ordinary prose" paragraph
+    we appended. When we see a paragraph whose first non-whitespace char is
+    LOWERCASE (almost never starts a fresh sentence) or a math operator /
+    closing bracket, merge it into THAT pointer rather than the immediate
+    previous paragraph — so a Figure caption sandwiched between two halves
+    of a bullet doesn't split the bullet.
+
+    Section headings / figure / table captions match `_NEW_UNIT_PREFIX` and
+    are appended unchanged; they don't update the prose pointer. Anything
+    else updates the pointer."""
+    if not paras:
+        return paras
+    merged: list[Paragraph] = []
+    last_prose_idx = -1
+    for p in paras:
+        if _NEW_UNIT_PREFIX.match(p.text):
+            # Headings / captions never absorb continuations and never act
+            # as "prose targets". Just append.
+            merged.append(p)
+            continue
+        first_real = p.text.lstrip()[:1]
+        is_math_cont = bool(_MATH_CONTINUATION.match(p.text))
+        is_lowercase_cont = bool(first_real) and first_real.islower() and first_real.isascii()
+        if last_prose_idx >= 0 and (is_math_cont or is_lowercase_cont):
+            target = merged[last_prose_idx]
+            merged[last_prose_idx] = Paragraph(
+                page=target.page, text=f"{target.text} {p.text}",
+            )
+        else:
+            merged.append(p)
+            last_prose_idx = len(merged) - 1
+    return merged
 
 
 def _normalize(s: str) -> str:
