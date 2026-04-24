@@ -383,16 +383,135 @@ async def public_config():
     }
 
 
+def _pdf_head_and_header(src_url: str) -> str:
+    """Opening HTML — everything before the first paragraph. Separated from
+    the body so the streaming endpoint can emit it immediately, flush, and
+    let the browser paint the shell + load MathJax while translation runs."""
+    esc = _html.escape
+    title = src_url.rsplit("/", 1)[-1] or "PDF"
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{esc(title)} · 翻译</title>
+<script>
+  window.MathJax = {{
+    loader: {{ load: ['[tex]/textmacros', '[tex]/ams'] }},
+    tex: {{
+      packages: {{ '[+]': ['textmacros', 'ams'] }},
+      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+      displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+      processEscapes: true,
+    }},
+    options: {{
+      processHtmlClass: 'tr',
+      ignoreHtmlClass: 'src',
+    }},
+  }};
+  // Translation-patch helper. Each server-streamed <script>$T(i, 'text')
+  // </script> finds the placeholder by id and updates it in-place, then
+  // re-typesets math in that node. Swallow MathJax errors so a single bad
+  // LaTeX expression doesn't halt the stream.
+  window.$T = function(i, tr, failed) {{
+    const el = document.getElementById('tr-' + i);
+    if (!el) return;
+    if (failed) {{
+      el.className = 'tr tr-missing';
+      el.textContent = '（翻译失败）';
+    }} else {{
+      el.className = 'tr';
+      el.textContent = tr;
+      if (window.MathJax && window.MathJax.typesetPromise) {{
+        MathJax.typesetPromise([el]).catch(function() {{}});
+      }}
+    }}
+  }};
+  window.$S = function(done, total, failed) {{
+    const el = document.getElementById('status');
+    if (!el) return;
+    const parts = ['已完成 ' + done + '/' + total + ' 段'];
+    if (failed > 0) parts.push('失败 ' + failed);
+    el.textContent = parts.join(' · ');
+    if (done >= total) {{
+      el.className = failed > 0 ? 'meta status done err' : 'meta status done';
+    }}
+  }};
+  window.$I = function(pageIdx, dataUri) {{
+    const f = document.getElementById('fig-' + pageIdx);
+    if (!f) return;
+    const img = document.createElement('img');
+    img.src = dataUri;
+    img.alt = '第 ' + pageIdx + ' 页原图';
+    f.innerHTML = '';
+    f.appendChild(img);
+  }};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<style>
+  :root {{ color-scheme: light dark;
+    --bg:#f6f8fa; --card:#fff; --text:#1f2328; --muted:#656d76;
+    --border:#d0d7de; --accent:#2d8cf0; --danger:#cf222e; --success:#1a7f37;
+  }}
+  @media (prefers-color-scheme: dark) {{ :root {{
+    --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e;
+    --border:#30363d;
+  }} }}
+  * {{ box-sizing: border-box }}
+  body {{ margin: 0; padding: 24px 20px 60px;
+    font: 15px/1.65 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: var(--bg); color: var(--text); }}
+  .wrap {{ max-width: 820px; margin: 0 auto; }}
+  header.top {{ display:flex; align-items:baseline; gap:12px; margin-bottom: 8px; }}
+  header.top h1 {{ font-size: 20px; font-weight:700; margin:0; }}
+  header.top a {{ font-size: 13px; color: var(--muted); text-decoration: none; }}
+  header.top a:hover {{ text-decoration: underline; }}
+  .meta {{ color: var(--muted); font-size: 12px; margin: 0 0 18px; }}
+  .meta.status {{ position: sticky; top: 6px; background: var(--bg);
+    padding: 4px 8px; border-radius: 6px; z-index: 2;
+    border: 1px solid var(--border); display: inline-block; }}
+  .meta.status.done {{ color: var(--success); border-color: var(--success); }}
+  .meta.status.done.err {{ color: var(--danger); border-color: var(--danger); }}
+  .err {{ color: var(--danger); background: rgba(207,34,46,.08); padding: 10px 14px; border-radius: 8px; }}
+  h2.pg {{ font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); margin: 30px 0 8px;
+    border-top: 1px solid var(--border); padding-top: 12px; }}
+  figure.pdf-page {{ margin: 0 0 14px; border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden; background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
+  figure.pdf-page img {{ display: block; width: 100%; height: auto; }}
+  .para {{ background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin: 0 0 10px; }}
+  .src {{ color: var(--muted); font-size: 13.5px; line-height: 1.55; }}
+  .tr  {{ margin-top: 6px; font-size: 15.5px; line-height: 1.75;
+    font-family: "PingFang SC", "Noto Sans CJK SC", sans-serif; }}
+  .tr-missing {{ color: var(--muted); font-style: italic; }}
+  .tr-pending {{ color: var(--muted); font-style: italic; opacity: 0.6; }}
+  .tr-pending::before {{ content: ''; display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); margin-right: 6px;
+    animation: pulse 1.2s ease-in-out infinite; vertical-align: middle; }}
+  @keyframes pulse {{ 0%, 100% {{ opacity: 0.3 }} 50% {{ opacity: 1 }} }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>{esc(title)}</h1>
+    <a href="{esc(src_url)}" target="_blank" rel="noopener">查看原 PDF ↗</a>
+  </header>
+"""
+
+
+def _pdf_footer() -> str:
+    return "</div></body></html>"
+
+
 def _render_pdf_html(
     *, src_url: str, pairs: list[tuple[int, str, str]],
     error: str | None = None, meta: dict | None = None,
     page_images: dict[int, str] | None = None,
 ) -> str:
-    """Render the bilingual reading view. `pairs` is a list of
-    (page, source_text, translation). `meta` carries stats like token
-    counts + elapsed ms. Kept in one place so the streaming-progress
-    version and the complete-render version share styling."""
-    title = src_url.rsplit("/", 1)[-1] or "PDF"
+    """Whole-page render — used for error responses (no streaming needed)."""
     esc = _html.escape
     body_chunks: list[str] = []
     last_page = -1
@@ -400,10 +519,6 @@ def _render_pdf_html(
     for page, src, tr in pairs:
         if page != last_page:
             body_chunks.append(f'<h2 class="pg">第 {page} 页</h2>')
-            # Render the page image BEFORE its paragraphs — pdfminer only
-            # gives us text, so figures / equations-as-images / tables are
-            # otherwise lost. The rasterized original preserves everything
-            # the user needs to visually reference while reading the Chinese.
             img_src = page_images.get(page)
             if img_src:
                 body_chunks.append(
@@ -429,11 +544,8 @@ def _render_pdf_html(
             parts.append(f"共 {meta['pages_translated']}/{meta['pages_total']} 页")
         if meta.get("elapsed_ms"):
             parts.append(f"耗时 {meta['elapsed_ms']} ms")
-        if meta.get("tokens_in"):
-            parts.append(f"输入 {meta['tokens_in']:,} token")
         meta_line = f'<p class="meta">{" · ".join(parts)}</p>'
         if meta.get("truncated"):
-            # Use URLSearchParams-style to preserve target/model if present.
             from urllib.parse import urlencode
             all_url = "?" + urlencode({"src": meta.get("src_url") or "", "pages": 0})
             meta_line += (
@@ -442,85 +554,18 @@ def _render_pdf_html(
                 f'加载全部 {meta["pages_total"]} 页 ↗</a></p>'
             )
     err_line = f'<p class="err">⚠ {esc(error)}</p>' if error else ""
-    return f"""<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>{esc(title)} · 翻译</title>
-<!-- MathJax renders LaTeX in translations. PDF-extracted math usually loses
-     structure (subscripts / superscripts flatten), but when the LLM recognizes
-     a formula and reconstructs it as `$...$` LaTeX, we need a renderer or
-     the user just sees literal dollar signs and backslashes. Configure both
-     common delimiter conventions ($...$, \\(...\\), $$...$$, \\[...\\]). -->
-<script>
-  window.MathJax = {{
-    // textmacros gives us proper handling of `\\_`, `\\%`, `\\$`, etc. inside
-    // `\\text{{}}`. Without it, MathJax leaves the backslash literal and the user
-    // sees "pass\\_rate" instead of "pass_rate". The LLM routinely produces
-    // `\\text{{pass\\_rate}}` when reconstructing code-ish identifiers.
-    loader: {{ load: ['[tex]/textmacros', '[tex]/ams'] }},
-    tex: {{
-      packages: {{ '[+]': ['textmacros', 'ams'] }},
-      inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
-      displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
-      processEscapes: true,
-    }},
-    options: {{
-      // Only scan translation blocks — the source is raw PDF text that
-      // might contain incidental dollar signs we don't want treated as math.
-      processHtmlClass: 'tr',
-      ignoreHtmlClass: 'src',
-    }},
-  }};
-</script>
-<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
-<style>
-  :root {{ color-scheme: light dark;
-    --bg:#f6f8fa; --card:#fff; --text:#1f2328; --muted:#656d76;
-    --border:#d0d7de; --accent:#2d8cf0; --danger:#cf222e;
-  }}
-  @media (prefers-color-scheme: dark) {{ :root {{
-    --bg:#0d1117; --card:#161b22; --text:#e6edf3; --muted:#8b949e;
-    --border:#30363d;
-  }} }}
-  * {{ box-sizing: border-box }}
-  body {{ margin: 0; padding: 24px 20px 60px;
-    font: 15px/1.65 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
-    background: var(--bg); color: var(--text); }}
-  .wrap {{ max-width: 820px; margin: 0 auto; }}
-  header.top {{ display:flex; align-items:baseline; gap:12px; margin-bottom: 8px; }}
-  header.top h1 {{ font-size: 20px; font-weight:700; margin:0; }}
-  header.top a {{ font-size: 13px; color: var(--muted); text-decoration: none; }}
-  header.top a:hover {{ text-decoration: underline; }}
-  .meta {{ color: var(--muted); font-size: 12px; margin: 0 0 24px; }}
-  .err {{ color: var(--danger); background: rgba(207,34,46,.08); padding: 10px 14px; border-radius: 8px; }}
-  h2.pg {{ font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .08em; color: var(--muted); margin: 30px 0 8px;
-    border-top: 1px solid var(--border); padding-top: 12px; }}
-  figure.pdf-page {{ margin: 0 0 14px; border: 1px solid var(--border);
-    border-radius: 10px; overflow: hidden; background: #fff;
-    box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
-  figure.pdf-page img {{ display: block; width: 100%; height: auto; }}
-  .para {{ background: var(--card); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px; margin: 0 0 10px; }}
-  .src {{ color: var(--muted); font-size: 13.5px; line-height: 1.55; }}
-  .tr  {{ margin-top: 6px; font-size: 15.5px; line-height: 1.75;
-    font-family: "PingFang SC", "Noto Sans CJK SC", sans-serif; }}
-  .tr-missing {{ color: var(--muted); font-style: italic; }}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <header class="top">
-    <h1>{esc(title)}</h1>
-    <a href="{esc(src_url)}" target="_blank" rel="noopener">查看原 PDF ↗</a>
-  </header>
-  {meta_line}
-  {err_line}
-  {"".join(body_chunks)}
-</div>
-</body>
-</html>"""
+    return (
+        _pdf_head_and_header(src_url)
+        + meta_line + err_line
+        + "".join(body_chunks)
+        + _pdf_footer()
+    )
+
+
+def _js_str(s: str) -> str:
+    """JSON-encode a string for safe embedding in a <script> block — also
+    escape `</` to `<\\/` to prevent accidental `</script>` injection."""
+    return json.dumps(s, ensure_ascii=False).replace("</", "<\\/")
 
 
 @app.get("/pdf/view", response_class=HTMLResponse)
@@ -559,118 +604,199 @@ async def pdf_view(
     elif re.match(r"^https?://(?:[\w-]+\.)?github\.com/[^/]+/[^/]+/blob/", src):
         fetch_src = src.replace("/blob/", "/raw/", 1)
 
-    # 1) Download the PDF. Follow redirects (arxiv /pdf/<id> → CDN,
-    # Hugging Face /resolve/ → lfs CDN).
-    try:
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-            r = await c.get(fetch_src)
-            r.raise_for_status()
-            pdf_bytes = r.content
-    except httpx.HTTPError as e:
-        return HTMLResponse(
-            _render_pdf_html(src_url=src, pairs=[], error=f"下载 PDF 失败：{e}"),
-            status_code=502,
-        )
-
-    # 2) Validate — must actually be a PDF. pdfminer's "No /Root object!"
-    # error is cryptic; users need to know they hit a blob-viewer HTML page
-    # or a login wall. Real PDFs always start with %PDF- within the first
-    # 1 KB (some CDNs prepend a UTF-8 BOM or a few whitespace bytes).
-    head = pdf_bytes[:1024]
-    if b"%PDF-" not in head:
-        hint = ""
-        if head.lstrip().startswith(b"<"):
-            if "huggingface.co" in src:
-                hint = " — Hugging Face 页面上要用 /resolve/main/ 而不是 /blob/main/"
-            elif "github.com" in src:
-                hint = " — GitHub 页面上要用 raw.githubusercontent.com 或 /raw/ 路径"
-            else:
-                hint = " — 地址返回的是 HTML 页面而不是 PDF 字节，很多站点的 /blob/ 只是预览页"
-        return HTMLResponse(
-            _render_pdf_html(
-                src_url=src, pairs=[],
-                error=f"下载到的不是 PDF 文件（{len(pdf_bytes):,} 字节）{hint}",
-            ),
-            status_code=415,
-        )
-
-    if len(pdf_bytes) > 40 * 1024 * 1024:
-        return HTMLResponse(
-            _render_pdf_html(src_url=src, pairs=[],
-                             error="PDF 超过 40 MB 上限，本阅读器暂不处理"),
-            status_code=413,
-        )
-
-    # 2) Extract paragraphs — runs in a worker thread so the event loop stays
-    # responsive (pdfminer is pure-Python and CPU-bound on big PDFs).
+    # Everything that could block — PDF download, extraction — happens INSIDE
+    # the streaming generator. This means the browser paints the shell + status
+    # line within ~100 ms and sees "下载中..." → "解析中..." → actual
+    # translations progressively. Before this restructure, TTFB was 20 s on a
+    # 5 MB paper because download + extract blocked the response start.
     import asyncio
-    try:
-        paras = await asyncio.to_thread(extract_paragraphs, pdf_bytes)
-    except Exception as e:
-        log.exception("pdf extract failed")
-        return HTMLResponse(
-            _render_pdf_html(src_url=src, pairs=[],
-                             error=f"解析 PDF 失败：{e}"),
-            status_code=500,
-        )
-
-    if not paras:
-        return HTMLResponse(_render_pdf_html(
-            src_url=src, pairs=[],
-            error=f"从该 PDF 中没有抽到可翻译的文本（可能是扫描件 / 纯图片 PDF）。",
-        ))
-
-    # Page cap — long papers take minutes to translate and cost real money.
-    # Default: first 10 pages. Users can override with ?pages=N (or 0=unlimited
-    # within the hard cap above).
-    total_pages = max(p.page for p in paras)
-    requested = pages if pages is not None else 10
-    if requested > 0 and requested < total_pages:
-        paras = [p for p in paras if p.page <= requested]
-
-    # 3) Translate. Use the existing translator — same batch/cache/provider
-    # failover path as the inline extension translation.
-    try:
-        result = await app.state.translator.translate(
-            [TranslateItem(text=p.text) for p in paras],
-            target_lang=target or cfg.defaults.target_lang,
-            model=model,
-            topic="academic",
-        )
-    except UnknownProviderError as e:
-        raise HTTPException(400, str(e))
-
-    pairs = [(p.page, p.text, tr) for p, tr in zip(paras, result.translations)]
-
-    # Rasterize the pages we actually kept, so figures / equations-as-images /
-    # tables are preserved alongside the text translation. pypdfium2 is CPU
-    # bound → run on a worker thread. Skip silently on error; the text-only
-    # view is still useful.
     import base64
-    page_images: dict[int, str] = {}
-    try:
-        pages_to_render = min(requested, total_pages) if requested > 0 else total_pages
-        pngs = await asyncio.to_thread(render_page_pngs, pdf_bytes,
-                                       max_pages=pages_to_render)
-        for i, png in enumerate(pngs, start=1):
-            page_images[i] = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-    except Exception as e:
-        log.warning("pdf raster failed (falling back to text-only): %s", e)
+    import re as _re
+    esc = _html.escape
 
-    elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    truncated = requested > 0 and requested < total_pages
-    meta = {
-        "paragraphs": len(pairs),
-        "elapsed_ms": elapsed_ms,
-        "tokens_in": None,  # /translate doesn't expose aggregate tokens yet
-        "pages_translated": min(requested, total_pages) if requested > 0 else total_pages,
-        "pages_total": total_pages,
-        "truncated": truncated,
-        "src_url": src,
-    }
-    return HTMLResponse(_render_pdf_html(
-        src_url=src, pairs=pairs, meta=meta, page_images=page_images,
-    ))
+    def _blob_rewrite(url: str) -> str:
+        """Hugging Face / GitHub blob-viewer URL → raw-bytes URL."""
+        if _re.match(r"^https?://(?:[\w-]+\.)?huggingface\.co/.+/blob/", url):
+            return url.replace("/blob/", "/resolve/", 1)
+        if _re.match(r"^https?://(?:[\w-]+\.)?github\.com/[^/]+/[^/]+/blob/", url):
+            return url.replace("/blob/", "/raw/", 1)
+        return url
+
+    fetch_src = _blob_rewrite(src)
+
+    async def gen():
+        # 1) Shell + status line — emits within milliseconds so the browser
+        # paints immediately.
+        yield _pdf_head_and_header(src)
+        yield '<p class="meta status" id="status">下载 PDF 中…</p>'
+
+        # 2) Download the PDF inside the generator, under the emitted status.
+        try:
+            async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+                r = await c.get(fetch_src)
+                r.raise_for_status()
+                pdf_bytes = r.content
+        except httpx.HTTPError as e:
+            yield (
+                f'<p class="err">⚠ 下载 PDF 失败：{esc(str(e))}</p>'
+                + _pdf_footer()
+            )
+            return
+
+        # 3) Validate magic.
+        head_bytes = pdf_bytes[:1024]
+        if b"%PDF-" not in head_bytes:
+            hint = ""
+            if head_bytes.lstrip().startswith(b"<"):
+                if "huggingface.co" in src:
+                    hint = " — Hugging Face 页面上要用 /resolve/main/ 而不是 /blob/main/"
+                elif "github.com" in src:
+                    hint = " — GitHub 页面上要用 raw.githubusercontent.com 或 /raw/ 路径"
+                else:
+                    hint = " — 地址返回的是 HTML 页面而不是 PDF 字节，很多站点的 /blob/ 只是预览页"
+            yield (
+                f'<p class="err">⚠ 下载到的不是 PDF 文件（{len(pdf_bytes):,} 字节）{hint}</p>'
+                + _pdf_footer()
+            )
+            return
+
+        if len(pdf_bytes) > 40 * 1024 * 1024:
+            yield (
+                '<p class="err">⚠ PDF 超过 40 MB 上限，本阅读器暂不处理</p>'
+                + _pdf_footer()
+            )
+            return
+
+        # 4) Update status + extract paragraphs (CPU-bound, in worker thread).
+        yield '<script>var s=document.getElementById("status");if(s)s.textContent="解析 PDF 中…";</script>'
+        try:
+            paras = await asyncio.to_thread(extract_paragraphs, pdf_bytes)
+        except Exception as e:
+            log.exception("pdf extract failed")
+            yield (
+                f'<p class="err">⚠ 解析 PDF 失败：{esc(str(e))}</p>'
+                + _pdf_footer()
+            )
+            return
+
+        if not paras:
+            yield (
+                '<p class="err">⚠ 从该 PDF 中没有抽到可翻译的文本（可能是扫描件 / 纯图片 PDF）。</p>'
+                + _pdf_footer()
+            )
+            return
+
+        # 5) Apply page cap.
+        total_pages = max(p.page for p in paras)
+        requested = pages if pages is not None else 10
+        if requested > 0 and requested < total_pages:
+            paras = [p for p in paras if p.page <= requested]
+        truncated = requested > 0 and requested < total_pages
+        pages_to_render = min(requested, total_pages) if requested > 0 else total_pages
+
+        # 6) Update status with paragraph count.
+        status_text = f'准备翻译 {len(paras)} 段（第 1–{pages_to_render}/{total_pages} 页）…'
+        yield f'<script>var s=document.getElementById("status");if(s)s.textContent={_js_str(status_text)};</script>'
+        if truncated:
+            from urllib.parse import urlencode
+            all_url = "?" + urlencode({"src": src, "pages": 0})
+            yield (
+                f'<p class="meta">⚠ 默认只翻译前 {requested} 页控费 · '
+                f'<a href="{esc(all_url)}" style="color:var(--accent);text-decoration:none;">'
+                f'加载全部 {total_pages} 页 ↗</a></p>'
+            )
+
+        # Skeleton: page image placeholders + source + translation placeholders.
+        last_page = -1
+        for i, p in enumerate(paras):
+            if p.page != last_page:
+                yield f'<h2 class="pg">第 {p.page} 页</h2>'
+                yield f'<figure class="pdf-page" id="fig-{p.page}"></figure>'
+                last_page = p.page
+            yield (
+                f'<article class="para">'
+                f'<div class="src">{esc(p.text)}</div>'
+                f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
+                f'</article>'
+            )
+
+        # Now fan out two background tasks feeding a shared queue — raster
+        # (CPU-bound thread) and translation (network I/O). Both emit
+        # <script> patches that update the placeholders in place. Neither
+        # blocks the other.
+        queue: asyncio.Queue = asyncio.Queue()
+        SENTINEL = object()
+        state = {"done": 0, "failed": 0}
+
+        async def do_raster():
+            try:
+                pngs = await asyncio.to_thread(render_page_pngs, pdf_bytes, max_pages=pages_to_render)
+                for page_idx, png in enumerate(pngs, start=1):
+                    dataUri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+                    await queue.put(f'<script>$I({page_idx},{_js_str(dataUri)})</script>')
+            except Exception as e:
+                log.warning("pdf raster failed: %s", e)
+            finally:
+                await queue.put(SENTINEL)
+
+        async def do_translate():
+            try:
+                async for chunk in app.state.translator.translate_stream(
+                    [TranslateItem(text=p.text) for p in paras],
+                    target_lang=target or cfg.defaults.target_lang,
+                    model=model,
+                    topic="academic",
+                ):
+                    items = chunk.get("items", []) or []
+                    if not items:
+                        continue
+                    pieces = []
+                    for it in items:
+                        state["done"] += 1
+                        idx = it["i"]
+                        if it.get("failed"):
+                            state["failed"] += 1
+                            pieces.append(f'$T({idx},null,true)')
+                        else:
+                            pieces.append(f'$T({idx},{_js_str(it.get("translation", ""))})')
+                    pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]})')
+                    await queue.put('<script>' + ';'.join(pieces) + '</script>')
+            except UnknownProviderError as e:
+                await queue.put(
+                    f'<script>var s=document.getElementById("status");'
+                    f'if(s){{s.textContent={_js_str("⚠ " + str(e))};s.className="meta err";}}</script>'
+                )
+            except Exception as e:
+                log.exception("pdf stream translate failed")
+                await queue.put(
+                    f'<script>var s=document.getElementById("status");'
+                    f'if(s){{s.textContent={_js_str("⚠ 翻译失败：" + str(e))};s.className="meta err";}}</script>'
+                )
+            finally:
+                await queue.put(SENTINEL)
+
+        raster_t = asyncio.create_task(do_raster())
+        translate_t = asyncio.create_task(do_translate())
+        remaining = 2
+        while remaining > 0:
+            piece = await queue.get()
+            if piece is SENTINEL:
+                remaining -= 1
+            else:
+                yield piece
+        # Sweep any exceptions from tasks.
+        try:
+            await asyncio.gather(raster_t, translate_t)
+        except Exception:
+            log.exception("pdf task gather")
+
+        yield _pdf_footer()
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/transcribe")
