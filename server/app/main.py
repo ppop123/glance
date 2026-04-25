@@ -431,10 +431,11 @@ def _pdf_head_and_header(src_url: str) -> str:
       }}
     }}
   }};
-  window.$S = function(done, total, failed) {{
+  window.$S = function(done, total, failed, cached) {{
     const el = document.getElementById('status');
     if (!el) return;
     const parts = ['已完成 ' + done + '/' + total + ' 段'];
+    if (cached > 0) parts.push('缓存 ' + cached);
     if (failed > 0) parts.push('失败 ' + failed);
     el.textContent = parts.join(' · ');
     if (done >= total) {{
@@ -699,12 +700,46 @@ async def pdf_view(
         truncated = requested > 0 and requested < total_pages
         pages_to_render = min(requested, total_pages) if requested > 0 else total_pages
 
-        # 6) Update status with paragraph count.
-        status_text = f'准备翻译 {len(paras)} 段（第 1–{pages_to_render}/{total_pages} 页）…'
+        # 6) Bulk cache lookup BEFORE we render the skeleton — for paragraphs
+        # that are already cached, we render the translation inline immediately
+        # instead of a "翻译中…" placeholder. This kills the visual flicker
+        # where a fully-cached PDF would briefly show all placeholders before
+        # a single big <script>$T(...)</script> chunk patched them in.
+        target_resolved = target or cfg.defaults.target_lang
+        model_resolved = model or cfg.defaults.model
+
+        def _bulk_lookup():
+            return [
+                app.state.cache.get_text(p.text, model=model_resolved, target=target_resolved)
+                for p in paras
+            ]
+        cached_translations: list[str | None] = await asyncio.to_thread(_bulk_lookup)
+        miss_indices = [i for i, t in enumerate(cached_translations) if t is None]
+        cached_count = len(paras) - len(miss_indices)
+
+        # 7) Update status, baking in the cache stats from the start.
+        if cached_count == len(paras):
+            status_text = f'已缓存 {cached_count}/{len(paras)} 段 · 全部就绪'
+        elif cached_count > 0:
+            status_text = (
+                f'缓存命中 {cached_count}/{len(paras)} 段 · '
+                f'剩余 {len(miss_indices)} 段翻译中…'
+            )
+        else:
+            status_text = f'准备翻译 {len(paras)} 段（第 1–{pages_to_render}/{total_pages} 页）…'
         yield f'<script>var s=document.getElementById("status");if(s)s.textContent={_js_str(status_text)};</script>'
+
         if truncated:
             from urllib.parse import urlencode
-            all_url = "?" + urlencode({"src": src, "pages": 0})
+            # Preserve model + target so the follow-up request hits the same
+            # cache keys — without these, the link drops back to defaults and
+            # the first N pages re-translate from scratch under a different model.
+            all_qs: dict[str, str | int] = {"src": src, "pages": 0}
+            if target:
+                all_qs["target"] = target
+            if model:
+                all_qs["model"] = model
+            all_url = "?" + urlencode(all_qs)
             yield (
                 f'<p class="meta">⚠ 默认只翻译前 {requested} 页控费 · '
                 f'<a href="{esc(all_url)}" style="color:var(--accent);text-decoration:none;">'
@@ -741,11 +776,17 @@ async def pdf_view(
                     f'<figure class="pdf-page" id="fig-{figure_idx}"></figure>'
                 )
                 figure_idx += 1
+            cached_tr = cached_translations[i]
+            if cached_tr is not None:
+                # Render translation inline — no placeholder, no $T patch needed.
+                tr_html = f'<div class="tr">{esc(cached_tr)}</div>'
+            else:
+                tr_html = f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
             yield (
                 f'<article class="para">'
                 f'{inline_figure}'
                 f'<div class="src">{esc(p.text)}</div>'
-                f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
+                f'{tr_html}'
                 f'</article>'
             )
 
@@ -755,7 +796,16 @@ async def pdf_view(
         # blocks the other.
         queue: asyncio.Queue = asyncio.Queue()
         SENTINEL = object()
-        state = {"done": 0, "failed": 0}
+        # Cache hits are already rendered inline — they count as "done" from
+        # the start. Misses are what `do_translate` will actually work on.
+        state = {"done": cached_count, "failed": 0, "cached": cached_count}
+
+        # Surface the initial state immediately so the status bar shows
+        # "已完成 N/N 段 · 缓存 N" the moment the skeleton finishes painting,
+        # even before any LLM batch returns (or if there's nothing to do).
+        yield (
+            f'<script>$S({state["done"]},{len(paras)},{state["failed"]},{state["cached"]})</script>'
+        )
 
         async def do_raster():
             try:
@@ -770,11 +820,19 @@ async def pdf_view(
             finally:
                 await queue.put(SENTINEL)
 
+        # Only translate the misses. translate_stream sees a compact list with
+        # local indices 0..len(miss)-1; we map back to the original paragraph
+        # index when emitting $T() patches.
+        miss_paras = [paras[i] for i in miss_indices]
+
         async def do_translate():
             try:
+                if not miss_paras:
+                    # Nothing left to translate — let the finally fire SENTINEL.
+                    return
                 async for chunk in app.state.translator.translate_stream(
-                    [TranslateItem(text=p.text) for p in paras],
-                    target_lang=target or cfg.defaults.target_lang,
+                    [TranslateItem(text=p.text) for p in miss_paras],
+                    target_lang=target_resolved,
                     model=model,
                     topic="academic",
                 ):
@@ -784,13 +842,13 @@ async def pdf_view(
                     pieces = []
                     for it in items:
                         state["done"] += 1
-                        idx = it["i"]
+                        original_idx = miss_indices[it["i"]]
                         if it.get("failed"):
                             state["failed"] += 1
-                            pieces.append(f'$T({idx},null,true)')
+                            pieces.append(f'$T({original_idx},null,true)')
                         else:
-                            pieces.append(f'$T({idx},{_js_str(it.get("translation", ""))})')
-                    pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]})')
+                            pieces.append(f'$T({original_idx},{_js_str(it.get("translation", ""))})')
+                    pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]},{state["cached"]})')
                     await queue.put('<script>' + ';'.join(pieces) + '</script>')
             except UnknownProviderError as e:
                 await queue.put(
