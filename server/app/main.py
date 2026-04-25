@@ -412,9 +412,11 @@ def _pdf_head_and_header(src_url: str) -> str:
     }},
   }};
   // Translation-patch helper. Each server-streamed <script>$T(i, 'text')
-  // </script> finds the placeholder by id and updates it in-place, then
+  // <\/script> finds the placeholder by id and updates it in-place, then
   // re-typesets math in that node. Swallow MathJax errors so a single bad
-  // LaTeX expression doesn't halt the stream.
+  // LaTeX expression doesn't halt the stream. (The escaped "<\/" above is
+  // because a bare "<\/script>" in a script body — even inside a JS comment
+  // — terminates the surrounding <script> tag per HTML5 parsing rules.)
   window.$T = function(i, tr, failed) {{
     const el = document.getElementById('tr-' + i);
     if (!el) return;
