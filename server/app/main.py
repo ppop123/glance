@@ -14,7 +14,10 @@ from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
-from .pdf_extract import extract_paragraphs, render_page_pngs, MAX_PAGES_HARD_CAP
+from .pdf_extract import (
+    extract_paragraphs, detect_figure_crops, render_figure_crops,
+    MAX_PAGES_HARD_CAP,
+)
 from .providers_store import ProvidersStore
 from .stats import StatsStore
 from .translator import TranslateItem, Translator, UnknownProviderError
@@ -706,15 +709,39 @@ async def pdf_view(
                 f'加载全部 {total_pages} 页 ↗</a></p>'
             )
 
-        # Skeleton: page image placeholders + source + translation placeholders.
+        # Detect figure regions (the visual content above each "Figure N |"
+        # caption). pdfminer can't extract these as text, so they're invisible
+        # to anyone reading only the translation column unless we crop them
+        # out of the page raster and embed them inline next to the caption.
+        # No more full-page rasters at the top of each page — those duplicated
+        # the source-text column for no real benefit.
+        figure_crops = detect_figure_crops(paras)
+
+        # Skeleton: each figure caption gets a placeholder <figure> right
+        # ABOVE its <article>; the crop image is patched in via $I() once the
+        # raster task finishes. Captions are matched by index since
+        # `figure_crops` is in caption-discovery order — the same order we
+        # encounter `_FIGURE_CAPTION_RE.match(p.text)` here.
+        from .pdf_extract import _FIGURE_CAPTION_RE  # noqa: re-use the regex
         last_page = -1
+        figure_idx = 0
         for i, p in enumerate(paras):
             if p.page != last_page:
                 yield f'<h2 class="pg">第 {p.page} 页</h2>'
-                yield f'<figure class="pdf-page" id="fig-{p.page}"></figure>'
                 last_page = p.page
+            inline_figure = ""
+            if (
+                _FIGURE_CAPTION_RE.match(p.text)
+                and figure_idx < len(figure_crops)
+                and figure_crops[figure_idx].page == p.page
+            ):
+                inline_figure = (
+                    f'<figure class="pdf-page" id="fig-{figure_idx}"></figure>'
+                )
+                figure_idx += 1
             yield (
                 f'<article class="para">'
+                f'{inline_figure}'
                 f'<div class="src">{esc(p.text)}</div>'
                 f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
                 f'</article>'
@@ -730,12 +757,14 @@ async def pdf_view(
 
         async def do_raster():
             try:
-                pngs = await asyncio.to_thread(render_page_pngs, pdf_bytes, max_pages=pages_to_render)
-                for page_idx, png in enumerate(pngs, start=1):
+                pngs = await asyncio.to_thread(render_figure_crops, pdf_bytes, figure_crops)
+                for fi, png in enumerate(pngs):
+                    if not png:
+                        continue
                     dataUri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-                    await queue.put(f'<script>$I({page_idx},{_js_str(dataUri)})</script>')
+                    await queue.put(f'<script>$I({fi},{_js_str(dataUri)})</script>')
             except Exception as e:
-                log.warning("pdf raster failed: %s", e)
+                log.warning("pdf figure crop failed: %s", e)
             finally:
                 await queue.put(SENTINEL)
 

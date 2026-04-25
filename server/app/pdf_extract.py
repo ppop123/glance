@@ -25,6 +25,12 @@ HEADER_FOOTER_VERT_PCT = 0.07   # top/bottom 7% of page = probably chrome
 class Paragraph:
     page: int     # 1-indexed
     text: str
+    # PDF-space bbox of the originating LTTextBox (origin = bottom-left,
+    # y increases upward). Set by extract_paragraphs; preserved through the
+    # continuation-merge pass (only updated to the bounding union when two
+    # boxes are stitched). None if a fragment has no surviving bbox info.
+    bbox: tuple[float, float, float, float] | None = None
+    page_height: float | None = None
 
 
 def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
@@ -77,12 +83,14 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
     # to a visual block; treat each as one paragraph unless it crosses a
     # sentence boundary WITH a blank-line gap (rare for well-authored PDFs).
     for page_idx, page in enumerate(pages, start=1):
+        page_h = page.height
         for box in page:
             if not isinstance(box, LTTextBox):
                 continue
             raw = box.get_text()
             if not raw:
                 continue
+            box_bbox = (box.x0, box.y0, box.x1, box.y1)
             # Hyphen-at-EOL handling. Order matters — do this BEFORE the soft
             # line-break join below, otherwise `-\n` becomes `- ` and we lose
             # the signal to distinguish these two cases:
@@ -119,7 +127,10 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
                     continue
                 # Skip obvious standalone refs-block / citation dump paragraphs?
                 # For now keep them — the LLM handles them fine.
-                out.append(Paragraph(page=page_idx, text=t))
+                out.append(Paragraph(
+                    page=page_idx, text=t,
+                    bbox=box_bbox, page_height=page_h,
+                ))
 
     # Post-pass: merge fragment paragraphs that look like a single mathematical
     # expression split across pdfminer LTTextBoxes. Equations especially get
@@ -179,6 +190,10 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
             target = merged[last_prose_idx]
             merged[last_prose_idx] = Paragraph(
                 page=target.page, text=f"{target.text} {p.text}",
+                # Keep the FIRST box's bbox — that's the one tied to where the
+                # paragraph actually starts on the page, and it's what later
+                # heuristics (figure-crop matching) anchor to.
+                bbox=target.bbox, page_height=target.page_height,
             )
         else:
             merged.append(p)
@@ -194,6 +209,87 @@ def chunks_of(paras: list[Paragraph], size: int) -> Iterator[list[Paragraph]]:
     """Split paragraphs into chunks suitable for one batch translation call."""
     for i in range(0, len(paras), size):
         yield paras[i:i + size]
+
+
+# Captions that are followed by an actual figure on the page above them.
+_FIGURE_CAPTION_RE = re.compile(
+    r"^(?:Figure|Fig\.|Table|图\s*\d|表\s*\d)\s*\d", re.IGNORECASE,
+)
+
+
+@dataclass
+class FigureCrop:
+    """A region of a PDF page that contains a figure / chart / table — the
+    visual content above a `Figure N |` caption that pdfminer can't pull as
+    text. Pixel coords are computed lazily by main.py once we know the
+    page-image scale; this struct just carries PDF-space coordinates."""
+    page: int                  # 1-indexed
+    caption_text_prefix: str   # "Figure 3 |" — used to match caption to crop
+    pdf_top: float             # PDF-space y of the figure's top edge (= bottom of nearest text-box above)
+    pdf_bottom: float          # PDF-space y of the figure's bottom edge (= caption.y1)
+    page_height: float
+
+
+def detect_figure_crops(paras: list[Paragraph]) -> list[FigureCrop]:
+    """Walk the extracted paragraphs and, for each figure caption, compute
+    a crop region pointing at the figure visually above the caption on the
+    same page. Returns crops in caption-discovery order.
+
+    The figure region is bounded by:
+      - top    : bottom of the nearest LTTextBox immediately ABOVE the caption
+                 on the same page (or page top if none)
+      - bottom : top of the caption itself
+    For PDF coords (origin = bottom-left), "above" = higher y."""
+    out: list[FigureCrop] = []
+    # Group paragraphs by page for fast same-page neighbor lookup.
+    by_page: dict[int, list[Paragraph]] = {}
+    for p in paras:
+        if p.bbox is not None and p.page_height is not None:
+            by_page.setdefault(p.page, []).append(p)
+
+    for p in paras:
+        if not p.bbox or not p.page_height:
+            continue
+        if not _FIGURE_CAPTION_RE.match(p.text):
+            continue
+        cap_x0, cap_y0, cap_x1, cap_y1 = p.bbox
+        # Find the nearest text box ABOVE the caption (PDF y0 > caption.y1).
+        # Use its bottom (y0) as our crop's top. If nothing above, page top.
+        page_h = p.page_height
+        above_floor = page_h
+        nearest_y0 = page_h
+        nearest_dist = float("inf")
+        for q in by_page.get(p.page, []):
+            if q is p or not q.bbox:
+                continue
+            qx0, qy0, qx1, qy1 = q.bbox
+            if qy0 < cap_y1:           # not above the caption
+                continue
+            dist = qy0 - cap_y1
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_y0 = qy0
+        # Crop spans from caption.y1 up to nearest_y0. If nothing above on the
+        # same page, span up to page top so a page-top figure still gets cropped.
+        crop_top = nearest_y0
+        crop_bottom = cap_y1
+        # Caption prefix used as a stable handle for the matching code in
+        # main.py to find the right caption paragraph.
+        m = _FIGURE_CAPTION_RE.match(p.text)
+        prefix = m.group(0) if m else p.text[:12]
+        # Always emit one entry per caption — including degenerate "no figure
+        # really here" cases — so callers can pair captions to crops by index
+        # without being thrown off by skips. render_figure_crops returns empty
+        # bytes for tiny / inverted ranges and main.py treats that as
+        # "no inline figure for this caption".
+        out.append(FigureCrop(
+            page=p.page,
+            caption_text_prefix=prefix,
+            pdf_top=crop_top,
+            pdf_bottom=crop_bottom,
+            page_height=page_h,
+        ))
+    return out
 
 
 # ── Page rasterization ────────────────────────────────────────────────
@@ -222,6 +318,52 @@ def render_page_pngs(pdf_bytes: bytes, *, max_pages: int, dpi: int = 110) -> lis
                 out.append(buf.getvalue())
             finally:
                 page.close()
+    finally:
+        pdf.close()
+    return out
+
+
+def render_figure_crops(pdf_bytes: bytes, crops: list[FigureCrop], *, dpi: int = 130) -> list[bytes]:
+    """Rasterize each FigureCrop's region into a PNG. Returned in the same
+    order as `crops`. Slightly higher DPI than the per-page render (130 vs
+    110) since these are smaller crops that often contain finer detail
+    (chart axis labels, equation glyphs)."""
+    import io
+    import pypdfium2 as pdfium
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    out: list[bytes] = []
+    try:
+        scale = dpi / 72.0
+        # Render each unique page once, reuse for multiple crops on it.
+        by_page: dict[int, "object"] = {}
+        for c in crops:
+            page_idx0 = c.page - 1
+            if page_idx0 not in by_page:
+                page = pdf[page_idx0]
+                # Render full page → PIL once, reuse for crops on this page.
+                pil = page.render(scale=scale).to_pil()
+                page.close()
+                by_page[page_idx0] = pil
+            pil = by_page[page_idx0]
+            page_h_px = pil.height
+            # PDF coords have y=0 at bottom; pixel y=0 is at top. Flip.
+            top_px = max(0, int(round((c.page_height - c.pdf_top) * scale)))
+            bot_px = min(page_h_px, int(round((c.page_height - c.pdf_bottom) * scale)))
+            # Tiny ranges = no actual figure (nearest text box was right above
+            # the caption, e.g., a continuation of body text). Emit empty bytes
+            # so the index alignment with main.py's caption iteration holds;
+            # main.py treats empty bytes as "no inline figure for this caption".
+            if bot_px <= top_px or (bot_px - top_px) < 40:
+                out.append(b"")
+                continue
+            # Add a few pixels of padding so the figure isn't pixel-tight.
+            pad = 4
+            top_px = max(0, top_px - pad)
+            bot_px = min(page_h_px, bot_px + pad)
+            crop_pil = pil.crop((0, top_px, pil.width, bot_px))
+            buf = io.BytesIO()
+            crop_pil.save(buf, format="PNG", optimize=True)
+            out.append(buf.getvalue())
     finally:
         pdf.close()
     return out
