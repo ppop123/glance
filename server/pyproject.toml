@@ -10,7 +10,11 @@ dependencies = [
     "pyyaml>=6.0",
     "orjson>=3.10",
     "python-multipart>=0.0.26",
-    "pdfminer.six>=20240706",
+    # PyMuPDF (a.k.a. fitz) — switched away from pdfminer.six because its
+    # layout analyzer mangled math-prose paragraphs in academic papers
+    # (equations got spliced into the surrounding sentence in the wrong
+    # order). MuPDF reads in the source's natural reading order.
+    "pymupdf>=1.27",
     "pypdfium2>=4.30",
     "pillow>=11",
     # Headless Chromium for /pdf/export — renders the bilingual HTML view to a
