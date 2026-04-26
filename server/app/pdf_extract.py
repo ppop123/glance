@@ -1,19 +1,24 @@
-"""Extract readable paragraphs from a PDF. Tuned for academic papers:
-multi-column aware via pdfminer's LAParams, paragraph boundaries inferred
-from vertical gaps + sentence terminators.
+"""Extract readable paragraphs from a PDF. Tuned for academic papers.
 
-Returns a flat list of (page_index, paragraph_text). Figures, equations,
-and headers/footers are best-effort filtered by short-line + repeat-line
-heuristics."""
+Backend: PyMuPDF (fitz). We previously used pdfminer.six but its layout
+analyzer mangled math-prose paragraphs — equations rendered across
+multiple lines would get spliced INTO the surrounding sentence in the
+wrong order, producing un-translatable "by a factor of 𝑛 hc ×𝑑 be the
+where 𝑑 is the hidden size..." soup. PyMuPDF uses the same MuPDF layout
+engine that Chromium / Safari preview uses, and reads the source
+paragraph in its natural left-to-right, top-to-bottom flow even when math
+spans multiple visual lines.
+
+Returns a flat list of Paragraph(page, text, bbox, page_height). Figures,
+equations, and headers/footers are best-effort filtered by short-line +
+repeat-line heuristics — the same downstream consumers
+(detect_figure_crops / detect_noise_paragraphs) work unchanged."""
 from __future__ import annotations
 
-import io
 import re
 from dataclasses import dataclass
-from typing import Iterator
 
-from pdfminer.high_level import extract_pages
-from pdfminer.layout import LAParams, LTTextBox, LTTextLine
+import fitz  # PyMuPDF
 
 
 MIN_PARA_CHARS = 20          # drop figure captions / page numbers
@@ -25,10 +30,10 @@ HEADER_FOOTER_VERT_PCT = 0.07   # top/bottom 7% of page = probably chrome
 class Paragraph:
     page: int     # 1-indexed
     text: str
-    # PDF-space bbox of the originating LTTextBox (origin = bottom-left,
-    # y increases upward). Set by extract_paragraphs; preserved through the
-    # continuation-merge pass (only updated to the bounding union when two
-    # boxes are stitched). None if a fragment has no surviving bbox info.
+    # PDF-space bbox of the originating block (origin = bottom-left,
+    # y increases upward). fitz natively uses top-down coords; we flip them
+    # at construction time so detect_figure_crops can keep its bottom-up
+    # convention. None if a fragment has no surviving bbox info.
     bbox: tuple[float, float, float, float] | None = None
     page_height: float | None = None
 
@@ -36,109 +41,102 @@ class Paragraph:
 def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
     """Parse a PDF byte blob and return clean paragraphs in reading order.
 
-    The LAParams here are tuned for typical 2-column academic layout:
-        - `word_margin` loose so glyphs that are drawn with kerning still join
-        - `line_margin` tight so paragraph breaks land in the right place
-        - `boxes_flow` set to detect column order correctly
-    """
-    laparams = LAParams(
-        word_margin=0.1,
-        line_margin=0.5,
-        char_margin=2.0,
-        boxes_flow=0.5,
-        detect_vertical=False,
-    )
+    fitz's ``page.get_text("blocks")`` returns one block per visual paragraph
+    in the source PDF — much closer to the actual reading order than
+    pdfminer's column-then-flow heuristic. Each block is already the right
+    granularity for translation; we only do per-block hyphenation cleanup
+    + the same junk-line / paragraph-split passes as the old extractor."""
     out: list[Paragraph] = []
-    fp = io.BytesIO(pdf_bytes)
-    pages = list(extract_pages(fp, laparams=laparams, maxpages=MAX_PAGES_HARD_CAP))
-    if not pages:
-        return out
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        n = min(len(doc), MAX_PAGES_HARD_CAP)
+        if n == 0:
+            return out
 
-    # First pass: collect all lines with their y position per page to detect
-    # running headers / footers (text that repeats on many pages near the
-    # top/bottom edge — page numbers, journal names, etc.).
-    running_lines: dict[str, int] = {}
-    for page in pages:
-        page_h = page.height
-        top_zone = page_h * (1 - HEADER_FOOTER_VERT_PCT)
-        bot_zone = page_h * HEADER_FOOTER_VERT_PCT
-        for box in page:
-            if not isinstance(box, LTTextBox):
-                continue
-            for line in box:
-                if not isinstance(line, LTTextLine):
+        # First pass: collect lines with their y position per page to detect
+        # running headers / footers (text that repeats on many pages near the
+        # top/bottom edge — page numbers, journal names, etc.).
+        running_lines: dict[str, int] = {}
+        for i in range(n):
+            page = doc[i]
+            ph = page.rect.height
+            top_zone = ph * (1 - HEADER_FOOTER_VERT_PCT)
+            bot_zone = ph * HEADER_FOOTER_VERT_PCT
+            for block in page.get_text("blocks"):
+                x0, y0, x1, y1, btext, _bno, btype = block
+                if btype != 0:           # 0 = text, 1 = image
                     continue
-                txt = _normalize(line.get_text())
-                if not txt or len(txt) > 80:
+                # fitz y-axis is top-down; "below the top zone" means y0 < top_zone
+                # but we want "in the top chrome band" = y1 < top_zone (whole block
+                # sits in top 7%) OR "in the bottom chrome band" = y0 > bot_zone.
+                # Equivalent in top-down coords: y1 < ph*0.07 (top band) or
+                # y0 > ph*0.93 (bottom band).
+                in_top_band = y1 < ph * HEADER_FOOTER_VERT_PCT
+                in_bot_band = y0 > ph * (1 - HEADER_FOOTER_VERT_PCT)
+                if not (in_top_band or in_bot_band):
                     continue
-                # Lines in header/footer bands
-                y0, y1 = line.y0, line.y1
-                if y0 > top_zone or y1 < bot_zone:
-                    running_lines[txt] = running_lines.get(txt, 0) + 1
-    # "Repeats on 40%+ of pages" → treat as chrome
-    junk_lines = {t for t, c in running_lines.items()
-                  if c >= max(2, len(pages) * 0.4)}
+                for line in btext.strip().splitlines():
+                    s = _normalize(line)
+                    if not s or len(s) > 80:
+                        continue
+                    running_lines[s] = running_lines.get(s, 0) + 1
+        junk_lines = {t for t, c in running_lines.items()
+                      if c >= max(2, n * 0.4)}
 
-    # Second pass: emit paragraphs. A pdfminer LTTextBox roughly corresponds
-    # to a visual block; treat each as one paragraph unless it crosses a
-    # sentence boundary WITH a blank-line gap (rare for well-authored PDFs).
-    for page_idx, page in enumerate(pages, start=1):
-        page_h = page.height
-        for box in page:
-            if not isinstance(box, LTTextBox):
-                continue
-            raw = box.get_text()
-            if not raw:
-                continue
-            box_bbox = (box.x0, box.y0, box.x1, box.y1)
-            # Hyphen-at-EOL handling. Order matters — do this BEFORE the soft
-            # line-break join below, otherwise `-\n` becomes `- ` and we lose
-            # the signal to distinguish these two cases:
-            #
-            # (1) Word broken mid-syllable by justified-text wrapping:
-            #     "lang-\nuage" → "language" (hyphen IS a typographic artifact)
-            # (2) Compound proper noun with an intentional hyphen:
-            #     "Mixture-of-\nExperts" → "Mixture-of-Experts" (hyphen stays)
-            #
-            # Distinguishing heuristic: in (1) both sides are lowercase, in (2)
-            # the right side starts with an uppercase letter (or digit, as in
-            # "DeepSeek-V4-\nPro" where it's already an alphabetic class).
-            raw = re.sub(r"([a-z])-\n([a-z])", r"\1\2", raw)      # (1) join
-            raw = re.sub(r"-\n", "-", raw)                        # (2) strip \n, keep -
-            # Join ALL single line breaks inside a paragraph — including those
-            # that follow a sentence terminator. Earlier the regex preserved
-            # `.\n` to "let the paragraph splitter break on sentence ends",
-            # but pdfminer puts a `\n` after EVERY visual line, including
-            # mid-bullet wrap-arounds, so that broke bullet items into
-            # several "paragraphs" — one per sentence — and the user saw
-            # the last sentence look truncated when the bullet body actually
-            # continued in the next chunk. Only blank lines (\n\n+) are
-            # treated as real paragraph boundaries below.
-            raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
-            # Tidy up any doubled spaces left by the joins.
-            raw = re.sub(r"  +", " ", raw)
-            # Split on blank lines only — that's pdfminer's actual paragraph
-            # boundary signal, surviving the earlier soft-break join.
-            for chunk in re.split(r"\n\s*\n+", raw):
-                t = _normalize(chunk)
-                if not t or len(t) < MIN_PARA_CHARS:
+        # Second pass: emit paragraphs. fitz blocks already correspond to
+        # visual paragraphs; we just normalize per-block.
+        for i in range(n):
+            page = doc[i]
+            ph = page.rect.height
+            for block in page.get_text("blocks"):
+                x0, y0, x1, y1, raw, _bno, btype = block
+                if btype != 0 or not raw:
                     continue
-                if t in junk_lines:
-                    continue
-                # Skip obvious standalone refs-block / citation dump paragraphs?
-                # For now keep them — the LLM handles them fine.
-                out.append(Paragraph(
-                    page=page_idx, text=t,
-                    bbox=box_bbox, page_height=page_h,
-                ))
+                # Convert top-down y to bottom-up PDF-space y so downstream
+                # detect_figure_crops can keep its existing convention.
+                pdf_y0 = ph - y1   # bottom edge in PDF coords
+                pdf_y1 = ph - y0   # top edge in PDF coords
+                box_bbox = (x0, pdf_y0, x1, pdf_y1)
 
-    # Post-pass: merge fragment paragraphs that look like a single mathematical
-    # expression split across pdfminer LTTextBoxes. Equations especially get
-    # split because the typesetter places different lines (or sub/superscripts)
-    # in separate text boxes; the result is a paragraph that ends mid-formula
-    # and a follow-up that starts with `)` / `+` / `,` / `=` etc. — clearly
-    # a continuation rather than a new thought. Merge them with a single space
-    # so the LLM sees one coherent unit.
+                # Hyphen-at-EOL handling. Order matters — do this BEFORE the
+                # soft line-break join below, otherwise `-\n` becomes `- ` and
+                # we lose the signal to distinguish these two cases:
+                #
+                # (1) Word broken mid-syllable by justified-text wrapping:
+                #     "lang-\nuage" → "language" (hyphen IS a typographic artifact)
+                # (2) Compound proper noun with an intentional hyphen:
+                #     "Mixture-of-\nExperts" → "Mixture-of-Experts" (hyphen stays)
+                #
+                # Distinguishing heuristic: in (1) both sides are lowercase, in (2)
+                # the right side starts with an uppercase letter (or digit, as in
+                # "DeepSeek-V4-\nPro" where it's already an alphabetic class).
+                raw = re.sub(r"([a-z])-\n([a-z])", r"\1\2", raw)      # (1) join
+                raw = re.sub(r"-\n", "-", raw)                        # (2) strip \n, keep -
+                # Join ALL single line breaks inside a paragraph — including
+                # those that follow a sentence terminator. Soft line wraps
+                # within fitz's blocks are common; only blank lines (\n\n+)
+                # signal a real paragraph boundary.
+                raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
+                raw = re.sub(r"  +", " ", raw)
+
+                for chunk in re.split(r"\n\s*\n+", raw):
+                    t = _normalize(chunk)
+                    if not t or len(t) < MIN_PARA_CHARS:
+                        continue
+                    if t in junk_lines:
+                        continue
+                    out.append(Paragraph(
+                        page=i + 1, text=t,
+                        bbox=box_bbox, page_height=ph,
+                    ))
+    finally:
+        doc.close()
+
+    # Post-pass: merge fragment paragraphs that look like a single
+    # mathematical expression split across blocks. fitz fragments far less
+    # than pdfminer did, but the merger is still useful for the rare cases
+    # where a numbered equation lands in its own block right next to its
+    # introducing sentence.
     return _merge_continuation_fragments(out)
 
 
@@ -454,8 +452,39 @@ def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[i
             below.sort(key=lambda qi_q: -qi_q[1].bbox[3])
 
             def _is_prose(box) -> bool:
+                """Distinguish a body-prose paragraph from a wide table-row
+                block. Width alone isn't enough under MuPDF's layout engine:
+
+                  - A row of a multi-column table comes out as ONE wide
+                    block ("MMLU-Pro (EM) 89.1 87.5 91.0 ..."). Width-only
+                    classifies it as prose → table region bailed at
+                    cell #0 → empty crop.
+                  - A column-header row is also wide ("Benchmark (Metric)
+                    # Shots DeepSeek-V3.2 DeepSeek-V4-Flash ...") and has
+                    few digits, so a digit-only filter misses it.
+
+                Combined heuristic: a wide block is only prose when it
+                carries multi-sentence flow (an "x. X" boundary). Tabular
+                rows — header or data — almost never have that structure.
+                """
                 bx0, _by0, bx1, _by1 = box.bbox
-                return (bx1 - bx0) > prose_width
+                if (bx1 - bx0) <= prose_width:
+                    return False  # narrow → cell
+                txt = box.text
+                # Strong "this is prose" signal: at least one sentence
+                # boundary inside the block.
+                if re.search(r"[a-z]\.\s+[A-Z]", txt):
+                    return True
+                # Mostly digits → tabular data row.
+                alpha = sum(1 for c in txt if c.isalpha())
+                digit = sum(1 for c in txt if c.isdigit())
+                if alpha + digit > 0 and digit / (alpha + digit) > 0.15:
+                    return False
+                # Wide, no inter-sentence boundary, low digit ratio →
+                # column-header row or single-line caption fragment.
+                # Default to NOT-prose so the table region keeps growing;
+                # the walk_threshold gap check will still bound it.
+                return False
 
             if not below:
                 # Caption with nothing below it (page-end caption?). Degenerate.
@@ -491,6 +520,14 @@ def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[i
                     drop.add(first_qi)
                     for qi, q in below[1:]:
                         qy0, qy1 = q.bbox[1], q.bbox[3]
+                        # Stop at the next Table/Figure caption — that marks
+                        # the end of THIS table's region. Without this guard
+                        # we'd swallow the next caption (so Table 3 below
+                        # Table 2 gets dropped from translation, leaving the
+                        # bilingual reader with no Chinese for it).
+                        if _FIGURE_CAPTION_RE.match(q.text):
+                            pdf_bottom = max(qy1, lowest_y0)
+                            break
                         if _is_prose(q):
                             # Reach down to top-of-prose if it's close enough.
                             if (lowest_y0 - qy1) <= PROSE_REACH:
@@ -506,24 +543,65 @@ def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[i
                         drop.add(qi)
         else:
             # ── Figure: caption below, image above. Walk UP. ───────────────
-            # (Original behaviour; preserves figures-with-caption-below-image
-            # convention from prior commits. We keep the same single-anchor
-            # rule because between figure top and prose above it there's no
-            # text for pdfminer to extract — one above-anchor is enough.)
+            # We anchor the crop's top at the nearest "real" block above the
+            # caption — meaning a prose paragraph / heading, not a chart
+            # axis label.
+            #
+            # MuPDF's layout engine extracts every visible text run, so a
+            # bar chart on the page above a Figure caption produces dozens
+            # of tiny blocks ("57.9", "Apex Shortlist", "Token Position
+            # (K)", etc.) sitting INSIDE what we want to crop. The naive
+            # "nearest above-block" rule then anchors the crop's top on a
+            # 6pt-tall axis label right above the caption, leaving a 12pt
+            # crop that contains nothing useful.
+            #
+            # Width filter: a block is only used as an anchor when it
+            # spans ≥ 50% of the page's widest extent. Real paragraphs
+            # easily clear that bar; axis labels and individual data
+            # points don't.
+            #
+            # Once the figure region is bounded, we also DROP every text
+            # block that sits inside it from the translation pipeline —
+            # otherwise "0.4", "DeepSeek-V4-Pro", "Token Position (K)" each
+            # become their own translated <article>, polluting the
+            # bilingual reading flow with chart label fragments.
+            page_boxes = by_page.get(p.page, [])
+            page_max_width = max(
+                (q.bbox[2] - q.bbox[0] for _, q in page_boxes),
+                default=cap_x1 - cap_x0,
+            )
+            min_anchor_width = page_max_width * 0.5
+
             nearest_y0 = page_h
             nearest_dist = float("inf")
-            for qi, q in by_page.get(p.page, []):
+            for qi, q in page_boxes:
                 if q is p or q.bbox is None:
                     continue
-                qy0 = q.bbox[1]
+                qx0, qy0, qx1, qy1 = q.bbox
                 if qy0 < cap_y1:
                     continue  # below the caption, ignore
+                if (qx1 - qx0) < min_anchor_width:
+                    continue  # narrow → likely a figure-internal label
                 dist = qy0 - cap_y1
                 if dist < nearest_dist:
                     nearest_dist = dist
                     nearest_y0 = qy0
             pdf_top = nearest_y0
             pdf_bottom = cap_y1
+            # Drop every (narrow) text block inside the figure region from
+            # the translation pipeline — but never another Figure/Table
+            # caption, since that's its OWN bilingual unit and needs its
+            # own translation. Wide blocks (paragraphs / headings) inside
+            # this region are rare; the strict-inequality bbox test below
+            # filters them out alongside the anchor itself.
+            for qi, q in page_boxes:
+                if q is p or q.bbox is None:
+                    continue
+                if _FIGURE_CAPTION_RE.match(q.text):
+                    continue
+                qx0, qy0, qx1, qy1 = q.bbox
+                if qy0 >= cap_y1 and qy1 <= pdf_top:
+                    drop.add(qi)
 
         crops.append(FigureCrop(
             page=p.page,
