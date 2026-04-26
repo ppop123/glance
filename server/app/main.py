@@ -1,6 +1,7 @@
 """FastAPI entrypoint. Run: uv run uvicorn app.main:app --host 127.0.0.1 --port 8787"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -9,12 +10,15 @@ import html as _html
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .cache import Cache
 from .config import load_config
-from .pdf_extract import extract_paragraphs, render_page_pngs, MAX_PAGES_HARD_CAP
+from .pdf_extract import (
+    extract_paragraphs, detect_figure_crops, detect_noise_paragraphs,
+    render_figure_crops, MAX_PAGES_HARD_CAP,
+)
 from .providers_store import ProvidersStore
 from .stats import StatsStore
 from .translator import TranslateItem, Translator, UnknownProviderError
@@ -83,6 +87,11 @@ async def lifespan(app: FastAPI):
     app.state.vtt_cache = VttCache(vtt_path, ttl_days=90)
     # Track which canonical URLs have been cached already from a given job_id so we only write once.
     app.state.vtt_job_urls = {}
+    # Headless Chromium for /pdf/export. Lazy-initialized on the first request
+    # so the server still starts when playwright/chromium aren't installed.
+    app.state.playwright = None
+    app.state.browser = None
+    app.state.export_lock = asyncio.Lock()
     log.info("fanyi-server ready on %s:%s (upstream=%s model=%s)", cfg.host, cfg.port, cfg.upstream.base_url, cfg.defaults.model)
     try:
         yield
@@ -90,6 +99,16 @@ async def lifespan(app: FastAPI):
         await app.state.translator.aclose()
         if app.state.asr_client:
             await app.state.asr_client.aclose()
+        if app.state.browser is not None:
+            try:
+                await app.state.browser.close()
+            except Exception:
+                pass
+        if app.state.playwright is not None:
+            try:
+                await app.state.playwright.stop()
+            except Exception:
+                pass
 
 
 app = FastAPI(title="fanyi-server", version="0.1.0", lifespan=lifespan)
@@ -383,10 +402,15 @@ async def public_config():
     }
 
 
-def _pdf_head_and_header(src_url: str) -> str:
+def _pdf_head_and_header(src_url: str, export_url: str | None = None) -> str:
     """Opening HTML — everything before the first paragraph. Separated from
     the body so the streaming endpoint can emit it immediately, flush, and
-    let the browser paint the shell + load MathJax while translation runs."""
+    let the browser paint the shell + load MathJax while translation runs.
+
+    `export_url`: when set, renders a "下载双语 PDF" link in the header that
+    points at /pdf/export with the same params. Suppressed in print, so the
+    server-side Playwright render won't show the button in the exported PDF.
+    """
     esc = _html.escape
     title = src_url.rsplit("/", 1)[-1] or "PDF"
     return f"""<!doctype html>
@@ -396,9 +420,9 @@ def _pdf_head_and_header(src_url: str) -> str:
 <title>{esc(title)} · 翻译</title>
 <script>
   window.MathJax = {{
-    loader: {{ load: ['[tex]/textmacros', '[tex]/ams'] }},
+    loader: {{ load: ['[tex]/textmacros', '[tex]/ams', '[tex]/noerrors'] }},
     tex: {{
-      packages: {{ '[+]': ['textmacros', 'ams'] }},
+      packages: {{ '[+]': ['textmacros', 'ams', 'noerrors'] }},
       inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
       displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
       processEscapes: true,
@@ -409,9 +433,11 @@ def _pdf_head_and_header(src_url: str) -> str:
     }},
   }};
   // Translation-patch helper. Each server-streamed <script>$T(i, 'text')
-  // </script> finds the placeholder by id and updates it in-place, then
+  // <\\/script> finds the placeholder by id and updates it in-place, then
   // re-typesets math in that node. Swallow MathJax errors so a single bad
-  // LaTeX expression doesn't halt the stream.
+  // LaTeX expression doesn't halt the stream. (The escaped "<\\/" above is
+  // because a bare "<\\/script>" in a script body — even inside a JS comment
+  // — terminates the surrounding <script> tag per HTML5 parsing rules.)
   window.$T = function(i, tr, failed) {{
     const el = document.getElementById('tr-' + i);
     if (!el) return;
@@ -426,10 +452,11 @@ def _pdf_head_and_header(src_url: str) -> str:
       }}
     }}
   }};
-  window.$S = function(done, total, failed) {{
+  window.$S = function(done, total, failed, cached) {{
     const el = document.getElementById('status');
     if (!el) return;
     const parts = ['已完成 ' + done + '/' + total + ' 段'];
+    if (cached > 0) parts.push('缓存 ' + cached);
     if (failed > 0) parts.push('失败 ' + failed);
     el.textContent = parts.join(' · ');
     if (done >= total) {{
@@ -491,6 +518,36 @@ def _pdf_head_and_header(src_url: str) -> str:
     background: var(--accent); margin-right: 6px;
     animation: pulse 1.2s ease-in-out infinite; vertical-align: middle; }}
   @keyframes pulse {{ 0%, 100% {{ opacity: 0.3 }} 50% {{ opacity: 1 }} }}
+  /* Print stylesheet — used by both the user's Cmd+P AND the server-side
+     /pdf/export Playwright render. Strips chrome (sticky status, banners,
+     download button), forces a clean white page, and keeps article cards
+     from breaking across pages where possible. */
+  @media print {{
+    body {{ background: white; color: black; padding: 0;
+      font-size: 11pt; line-height: 1.6; }}
+    .wrap {{ max-width: none; padding: 0 8mm; }}
+    header.top {{ margin-bottom: 12px; }}
+    header.top h1 {{ font-size: 16pt; color: black; }}
+    header.top a {{ display: none; }}
+    .meta.status, .export-bar, .meta:not(.status) {{ display: none !important; }}
+    .err {{ display: none; }}
+    .para {{ background: white; border: 1px solid #d0d7de;
+      box-shadow: none; break-inside: avoid; margin-bottom: 8px;
+      padding: 10px 14px; }}
+    .src {{ color: #555; font-size: 9.5pt; }}
+    .tr {{ font-size: 11pt; color: black;
+      font-family: "PingFang SC", "Noto Sans CJK SC", "Songti SC", sans-serif; }}
+    .tr-pending {{ display: none; }}
+    .tr-missing {{ color: #999; font-style: italic; }}
+    h2.pg {{ break-after: avoid; color: #888; font-size: 9pt;
+      margin: 14px 0 6px; border-top: 1px solid #ccc; padding-top: 8px; }}
+    figure.pdf-page {{ break-inside: avoid; border: 1px solid #d0d7de;
+      box-shadow: none; }}
+    figure.pdf-page img {{ max-width: 100%; height: auto; }}
+    a {{ color: black; text-decoration: none; }}
+    /* Hide the MathJax accessibility tree (otherwise duplicates math text). */
+    mjx-assistive-mml {{ display: none !important; }}
+  }}
 </style>
 </head>
 <body>
@@ -498,6 +555,7 @@ def _pdf_head_and_header(src_url: str) -> str:
   <header class="top">
     <h1>{esc(title)}</h1>
     <a href="{esc(src_url)}" target="_blank" rel="noopener">查看原 PDF ↗</a>
+    {f'<a class="export-bar" href="{esc(export_url)}" style="margin-left:auto;color:var(--accent);font-weight:500;">📥 下载双语 PDF</a>' if export_url else ''}
   </header>
 """
 
@@ -568,6 +626,43 @@ def _js_str(s: str) -> str:
     return json.dumps(s, ensure_ascii=False).replace("</", "<\\/")
 
 
+def _mathjax_safe(s: str) -> str:
+    """Defuse MathJax delimiters that would cause typeset errors to render
+    visible "Missing superscript" / "Extra close brace" red text into the
+    bilingual view.
+
+    The bilingual view applies MathJax to every ``.tr`` div. The translator
+    sometimes emits unbalanced ``$...$`` math because the source paragraph
+    itself has math fragments mid-sentence (pdfminer's interleaving), and
+    the model's attempt at LaTeX comes out half-formed. When MathJax can't
+    parse those fragments it doesn't fail silently — it inserts an error
+    badge into the DOM that ends up in the exported PDF.
+
+    Two cheap rules cover the cases we've seen on real papers:
+
+      - Odd number of ``$`` → escape every ``$`` to ``\\$`` (MathJax
+        respects this; renders as a literal dollar sign in both browser
+        DOM and exported PDF).
+      - Mismatched ``{``/``}`` count when there's any math content in the
+        string → swap curly braces for their U+FF5B/U+FF5D fullwidth
+        counterparts. They look visually identical to ``{}`` but MathJax
+        doesn't treat them as group delimiters.
+
+    Strings with balanced delimiters pass through untouched, so legitimate
+    inline math (``$E = mc^2$``) still typesets normally. Output is
+    HTML/JSON-encoding safe — no characters that need to be re-escaped at
+    the next stage of the pipeline.
+    """
+    if s.count("$") % 2 == 1:
+        s = s.replace("$", "\\$")
+    open_b, close_b = s.count("{"), s.count("}")
+    if open_b != close_b and ("$" in s or "\\" in s or any(
+        "\U0001D400" <= c <= "\U0001D7FF" for c in s
+    )):
+        s = s.replace("{", "｛").replace("}", "｝")
+    return s
+
+
 @app.get("/pdf/view", response_class=HTMLResponse)
 async def pdf_view(
     src: str,
@@ -624,10 +719,23 @@ async def pdf_view(
 
     fetch_src = _blob_rewrite(src)
 
+    # Build the matching /pdf/export URL so the header can link to it. Same
+    # params as this view, just a different path. The export endpoint hides
+    # itself from print so the rendered PDF won't contain its own link.
+    from urllib.parse import urlencode as _urlencode
+    export_qs: dict[str, str | int] = {"src": src}
+    if target:
+        export_qs["target"] = target
+    if model:
+        export_qs["model"] = model
+    if pages is not None:
+        export_qs["pages"] = pages
+    export_url = "/pdf/export?" + _urlencode(export_qs)
+
     async def gen():
         # 1) Shell + status line — emits within milliseconds so the browser
         # paints immediately.
-        yield _pdf_head_and_header(src)
+        yield _pdf_head_and_header(src, export_url=export_url)
         yield '<p class="meta status" id="status">下载 PDF 中…</p>'
 
         # 2) Download the PDF inside the generator, under the emitted status.
@@ -694,29 +802,108 @@ async def pdf_view(
         truncated = requested > 0 and requested < total_pages
         pages_to_render = min(requested, total_pages) if requested > 0 else total_pages
 
-        # 6) Update status with paragraph count.
-        status_text = f'准备翻译 {len(paras)} 段（第 1–{pages_to_render}/{total_pages} 页）…'
+        # 6) Detect figure / table regions + content noise BEFORE cache
+        # lookup so we can drop them from the translation pipeline.
+        #
+        # Two sources of "don't-translate-this" indices:
+        #   - in-table cells: pdfminer extracts each cell as its own
+        #     LTTextBox — multi-column rows come out interleaved, rotated
+        #     column headers come out reversed ("egdelwonK" = "Knowledge"
+        #     backwards), and the LLM dutifully mistranslates the soup.
+        #     The figure crop renders the same region as an image, so the
+        #     reader still sees the table — they just don't see garbled text
+        #     pretending to be a translation of it.
+        #   - content noise: TOC dot-leaders ("2.3 Hybrid Attention . . . .")
+        #     and pure-equation paragraphs (math-italic glyphs only). Both
+        #     produce no useful Chinese — TOC entries are navigation chrome
+        #     not worth translating, equations are layout artifacts.
+        figure_crops, in_table_para_indices = detect_figure_crops(paras)
+        noise_indices = detect_noise_paragraphs(paras)
+        drop_indices = in_table_para_indices | noise_indices
+        if drop_indices:
+            paras = [p for i, p in enumerate(paras) if i not in drop_indices]
+
+        # 7) Bulk cache lookup BEFORE we render the skeleton — for paragraphs
+        # that are already cached, we render the translation inline immediately
+        # instead of a "翻译中…" placeholder. This kills the visual flicker
+        # where a fully-cached PDF would briefly show all placeholders before
+        # a single big <script>$T(...)</script> chunk patched them in.
+        target_resolved = target or cfg.defaults.target_lang
+        model_resolved = model or cfg.defaults.model
+
+        def _bulk_lookup():
+            return [
+                app.state.cache.get_text(p.text, model=model_resolved, target=target_resolved)
+                for p in paras
+            ]
+        cached_translations: list[str | None] = await asyncio.to_thread(_bulk_lookup)
+        miss_indices = [i for i, t in enumerate(cached_translations) if t is None]
+        cached_count = len(paras) - len(miss_indices)
+
+        # 7) Update status, baking in the cache stats from the start.
+        if cached_count == len(paras):
+            status_text = f'已缓存 {cached_count}/{len(paras)} 段 · 全部就绪'
+        elif cached_count > 0:
+            status_text = (
+                f'缓存命中 {cached_count}/{len(paras)} 段 · '
+                f'剩余 {len(miss_indices)} 段翻译中…'
+            )
+        else:
+            status_text = f'准备翻译 {len(paras)} 段（第 1–{pages_to_render}/{total_pages} 页）…'
         yield f'<script>var s=document.getElementById("status");if(s)s.textContent={_js_str(status_text)};</script>'
+
         if truncated:
             from urllib.parse import urlencode
-            all_url = "?" + urlencode({"src": src, "pages": 0})
+            # Preserve model + target so the follow-up request hits the same
+            # cache keys — without these, the link drops back to defaults and
+            # the first N pages re-translate from scratch under a different model.
+            all_qs: dict[str, str | int] = {"src": src, "pages": 0}
+            if target:
+                all_qs["target"] = target
+            if model:
+                all_qs["model"] = model
+            all_url = "?" + urlencode(all_qs)
             yield (
                 f'<p class="meta">⚠ 默认只翻译前 {requested} 页控费 · '
                 f'<a href="{esc(all_url)}" style="color:var(--accent);text-decoration:none;">'
                 f'加载全部 {total_pages} 页 ↗</a></p>'
             )
 
-        # Skeleton: page image placeholders + source + translation placeholders.
+        # Skeleton: each figure / table caption gets a placeholder <figure>
+        # right ABOVE its <article>; the crop image is patched in via $I()
+        # once the raster task finishes. Captions are matched by index since
+        # `figure_crops` (computed earlier with `in_table_para_indices`) is
+        # in caption-discovery order — the same order we encounter
+        # `_FIGURE_CAPTION_RE.match(p.text)` here, and dropping in-table
+        # cells doesn't disturb that since captions are not cells.
+        from .pdf_extract import _FIGURE_CAPTION_RE  # noqa: re-use the regex
         last_page = -1
+        figure_idx = 0
         for i, p in enumerate(paras):
             if p.page != last_page:
                 yield f'<h2 class="pg">第 {p.page} 页</h2>'
-                yield f'<figure class="pdf-page" id="fig-{p.page}"></figure>'
                 last_page = p.page
+            inline_figure = ""
+            if (
+                _FIGURE_CAPTION_RE.match(p.text)
+                and figure_idx < len(figure_crops)
+                and figure_crops[figure_idx].page == p.page
+            ):
+                inline_figure = (
+                    f'<figure class="pdf-page" id="fig-{figure_idx}"></figure>'
+                )
+                figure_idx += 1
+            cached_tr = cached_translations[i]
+            if cached_tr is not None:
+                # Render translation inline — no placeholder, no $T patch needed.
+                tr_html = f'<div class="tr">{esc(_mathjax_safe(cached_tr))}</div>'
+            else:
+                tr_html = f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
             yield (
                 f'<article class="para">'
+                f'{inline_figure}'
                 f'<div class="src">{esc(p.text)}</div>'
-                f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
+                f'{tr_html}'
                 f'</article>'
             )
 
@@ -726,24 +913,43 @@ async def pdf_view(
         # blocks the other.
         queue: asyncio.Queue = asyncio.Queue()
         SENTINEL = object()
-        state = {"done": 0, "failed": 0}
+        # Cache hits are already rendered inline — they count as "done" from
+        # the start. Misses are what `do_translate` will actually work on.
+        state = {"done": cached_count, "failed": 0, "cached": cached_count}
+
+        # Surface the initial state immediately so the status bar shows
+        # "已完成 N/N 段 · 缓存 N" the moment the skeleton finishes painting,
+        # even before any LLM batch returns (or if there's nothing to do).
+        yield (
+            f'<script>$S({state["done"]},{len(paras)},{state["failed"]},{state["cached"]})</script>'
+        )
 
         async def do_raster():
             try:
-                pngs = await asyncio.to_thread(render_page_pngs, pdf_bytes, max_pages=pages_to_render)
-                for page_idx, png in enumerate(pngs, start=1):
+                pngs = await asyncio.to_thread(render_figure_crops, pdf_bytes, figure_crops)
+                for fi, png in enumerate(pngs):
+                    if not png:
+                        continue
                     dataUri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-                    await queue.put(f'<script>$I({page_idx},{_js_str(dataUri)})</script>')
+                    await queue.put(f'<script>$I({fi},{_js_str(dataUri)})</script>')
             except Exception as e:
-                log.warning("pdf raster failed: %s", e)
+                log.warning("pdf figure crop failed: %s", e)
             finally:
                 await queue.put(SENTINEL)
 
+        # Only translate the misses. translate_stream sees a compact list with
+        # local indices 0..len(miss)-1; we map back to the original paragraph
+        # index when emitting $T() patches.
+        miss_paras = [paras[i] for i in miss_indices]
+
         async def do_translate():
             try:
+                if not miss_paras:
+                    # Nothing left to translate — let the finally fire SENTINEL.
+                    return
                 async for chunk in app.state.translator.translate_stream(
-                    [TranslateItem(text=p.text) for p in paras],
-                    target_lang=target or cfg.defaults.target_lang,
+                    [TranslateItem(text=p.text) for p in miss_paras],
+                    target_lang=target_resolved,
                     model=model,
                     topic="academic",
                 ):
@@ -753,13 +959,13 @@ async def pdf_view(
                     pieces = []
                     for it in items:
                         state["done"] += 1
-                        idx = it["i"]
+                        original_idx = miss_indices[it["i"]]
                         if it.get("failed"):
                             state["failed"] += 1
-                            pieces.append(f'$T({idx},null,true)')
+                            pieces.append(f'$T({original_idx},null,true)')
                         else:
-                            pieces.append(f'$T({idx},{_js_str(it.get("translation", ""))})')
-                    pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]})')
+                            pieces.append(f'$T({original_idx},{_js_str(_mathjax_safe(it.get("translation", "")))})')
+                    pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]},{state["cached"]})')
                     await queue.put('<script>' + ';'.join(pieces) + '</script>')
             except UnknownProviderError as e:
                 await queue.put(
@@ -796,6 +1002,167 @@ async def pdf_view(
         gen(),
         media_type="text/html; charset=utf-8",
         headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _ensure_browser():
+    """Lazy-start the Playwright browser singleton on first export request.
+
+    Why lazy: starting Chromium adds ~1 s + ~150 MB RSS to the server. Most
+    fanyi-ext usage never touches /pdf/export, so we don't pay it at boot.
+    Why singleton: each export costs ~100-200 MB peak; we cap concurrent
+    exports via export_lock so only one render runs at a time.
+    """
+    if app.state.browser is not None:
+        return app.state.browser
+    async with app.state.export_lock:
+        if app.state.browser is None:
+            try:
+                from playwright.async_api import async_playwright
+            except ImportError as e:
+                raise HTTPException(
+                    503,
+                    "导出需要 playwright；请在 server 目录下执行 "
+                    "`uv add playwright && uv run playwright install chromium`",
+                ) from e
+            try:
+                app.state.playwright = await async_playwright().start()
+                app.state.browser = await app.state.playwright.chromium.launch(
+                    args=["--no-sandbox"],
+                )
+            except Exception as e:
+                app.state.playwright = None
+                app.state.browser = None
+                msg = str(e)
+                if "Executable doesn't exist" in msg or "playwright install" in msg:
+                    raise HTTPException(
+                        503,
+                        "Chromium 还没装；请执行 "
+                        "`uv run playwright install chromium`",
+                    ) from e
+                raise
+    return app.state.browser
+
+
+@app.get("/pdf/export")
+async def pdf_export(
+    src: str,
+    target: str | None = None,
+    model: str | None = None,
+    pages: int | None = None,
+):
+    """Render the bilingual /pdf/view in headless Chromium and return a
+    downloadable PDF.
+
+    Internally points the browser at our own /pdf/view URL on the bound
+    interface. Waits for `.meta.status.done` (set by `$S(...)` once
+    `done >= total`) before calling `page.pdf()`, so partial-cache /
+    in-flight translations are flushed first. Print stylesheet (in
+    _pdf_head_and_header) hides the sticky status bar, the truncation
+    banner, and the export button itself — what's left is just the
+    bilingual content.
+
+    Concurrency: serialized via app.state.export_lock. Per-page renders
+    are heavyweight (Chromium + MathJax + base64 figure crops); running
+    them in parallel risks OOMing a small box. If users complain about
+    queueing, swap the lock for an asyncio.Semaphore(2-3).
+    """
+    if not src or not src.startswith(("http://", "https://")):
+        raise HTTPException(400, "src must be an http(s) URL")
+    if len(src) > 2000:
+        raise HTTPException(400, "src URL too long")
+
+    from urllib.parse import urlencode
+    qs: dict[str, str | int] = {"src": src}
+    if target:
+        qs["target"] = target
+    if model:
+        qs["model"] = model
+    if pages is not None:
+        qs["pages"] = pages
+    view_url = f"http://127.0.0.1:{cfg.port}/pdf/view?{urlencode(qs)}"
+
+    browser = await _ensure_browser()
+
+    async with app.state.export_lock:
+        context = await browser.new_context(
+            viewport={"width": 900, "height": 1200},
+            # Force light scheme so the print stylesheet doesn't get a dark bg.
+            color_scheme="light",
+        )
+        page = await context.new_page()
+        try:
+            # `commit` returns as soon as the navigation is committed (HTTP
+            # response started). With our streaming HTML we don't want to
+            # wait for `load` because that fires only after gen() finishes
+            # — by then everything's already settled, but `commit` lets us
+            # observe the status-bar transitions ourselves below.
+            await page.goto(view_url, wait_until="commit", timeout=60_000)
+
+            # Wait for translation to finish. $S sets `meta.status.done`
+            # when done >= total. 10-minute ceiling covers cold-cache full
+            # 50-page papers; cached opens land in a few seconds.
+            try:
+                await page.wait_for_selector(
+                    ".meta.status.done", timeout=600_000, state="attached",
+                )
+            except Exception:
+                # If the status never flips to done, surface what's on screen
+                # (probably an error banner) rather than just a timeout.
+                err_text = await page.evaluate(
+                    "() => document.querySelector('.err')?.textContent || ''"
+                )
+                if err_text:
+                    raise HTTPException(502, f"导出失败：{err_text.strip()}")
+                raise HTTPException(504, "翻译超时（10 分钟仍未完成）")
+
+            # Let MathJax finish typesetting any newly patched-in cells.
+            # `MathJax.startup.promise` resolves once the bootstrap is done;
+            # `typesetPromise()` re-typesets anything we may have touched
+            # via $T(...) after the initial sweep.
+            await page.evaluate("""async () => {
+                if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                    await window.MathJax.startup.promise;
+                }
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    try { await window.MathJax.typesetPromise(); } catch (_) {}
+                }
+            }""")
+            # Brief settle for any in-flight base64 figure decoding/layout.
+            await page.wait_for_timeout(400)
+
+            pdf_bytes = await page.pdf(
+                format="A4",
+                print_background=True,
+                prefer_css_page_size=False,
+                margin={
+                    "top": "18mm",
+                    "bottom": "18mm",
+                    "left": "14mm",
+                    "right": "14mm",
+                },
+            )
+        finally:
+            await context.close()
+
+    # Filename: <stem>.<target>.pdf — derived from the source URL.
+    stem = src.rsplit("/", 1)[-1] or "translation"
+    if stem.lower().endswith(".pdf"):
+        stem = stem[:-4]
+    out_filename = f"{stem}.{target or cfg.defaults.target_lang}.pdf"
+    # Some browsers/proxies dislike non-ASCII in Content-Disposition; encode
+    # via RFC 5987 so utf-8 filenames round-trip. ASCII fallback included
+    # for older clients.
+    from urllib.parse import quote
+    ascii_fallback = stem.encode("ascii", "replace").decode("ascii") + f".{target or cfg.defaults.target_lang}.pdf"
+    cd = (
+        f'attachment; filename="{ascii_fallback}"; '
+        f"filename*=UTF-8''{quote(out_filename)}"
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": cd, "Cache-Control": "no-store"},
     )
 
 
