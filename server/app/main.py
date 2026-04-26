@@ -420,9 +420,9 @@ def _pdf_head_and_header(src_url: str, export_url: str | None = None) -> str:
 <title>{esc(title)} · 翻译</title>
 <script>
   window.MathJax = {{
-    loader: {{ load: ['[tex]/textmacros', '[tex]/ams'] }},
+    loader: {{ load: ['[tex]/textmacros', '[tex]/ams', '[tex]/noerrors'] }},
     tex: {{
-      packages: {{ '[+]': ['textmacros', 'ams'] }},
+      packages: {{ '[+]': ['textmacros', 'ams', 'noerrors'] }},
       inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
       displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
       processEscapes: true,
@@ -624,6 +624,43 @@ def _js_str(s: str) -> str:
     """JSON-encode a string for safe embedding in a <script> block — also
     escape `</` to `<\\/` to prevent accidental `</script>` injection."""
     return json.dumps(s, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _mathjax_safe(s: str) -> str:
+    """Defuse MathJax delimiters that would cause typeset errors to render
+    visible "Missing superscript" / "Extra close brace" red text into the
+    bilingual view.
+
+    The bilingual view applies MathJax to every ``.tr`` div. The translator
+    sometimes emits unbalanced ``$...$`` math because the source paragraph
+    itself has math fragments mid-sentence (pdfminer's interleaving), and
+    the model's attempt at LaTeX comes out half-formed. When MathJax can't
+    parse those fragments it doesn't fail silently — it inserts an error
+    badge into the DOM that ends up in the exported PDF.
+
+    Two cheap rules cover the cases we've seen on real papers:
+
+      - Odd number of ``$`` → escape every ``$`` to ``\\$`` (MathJax
+        respects this; renders as a literal dollar sign in both browser
+        DOM and exported PDF).
+      - Mismatched ``{``/``}`` count when there's any math content in the
+        string → swap curly braces for their U+FF5B/U+FF5D fullwidth
+        counterparts. They look visually identical to ``{}`` but MathJax
+        doesn't treat them as group delimiters.
+
+    Strings with balanced delimiters pass through untouched, so legitimate
+    inline math (``$E = mc^2$``) still typesets normally. Output is
+    HTML/JSON-encoding safe — no characters that need to be re-escaped at
+    the next stage of the pipeline.
+    """
+    if s.count("$") % 2 == 1:
+        s = s.replace("$", "\\$")
+    open_b, close_b = s.count("{"), s.count("}")
+    if open_b != close_b and ("$" in s or "\\" in s or any(
+        "\U0001D400" <= c <= "\U0001D7FF" for c in s
+    )):
+        s = s.replace("{", "｛").replace("}", "｝")
+    return s
 
 
 @app.get("/pdf/view", response_class=HTMLResponse)
@@ -859,7 +896,7 @@ async def pdf_view(
             cached_tr = cached_translations[i]
             if cached_tr is not None:
                 # Render translation inline — no placeholder, no $T patch needed.
-                tr_html = f'<div class="tr">{esc(cached_tr)}</div>'
+                tr_html = f'<div class="tr">{esc(_mathjax_safe(cached_tr))}</div>'
             else:
                 tr_html = f'<div class="tr tr-pending" id="tr-{i}">翻译中…</div>'
             yield (
@@ -927,7 +964,7 @@ async def pdf_view(
                             state["failed"] += 1
                             pieces.append(f'$T({original_idx},null,true)')
                         else:
-                            pieces.append(f'$T({original_idx},{_js_str(it.get("translation", ""))})')
+                            pieces.append(f'$T({original_idx},{_js_str(_mathjax_safe(it.get("translation", "")))})')
                     pieces.append(f'$S({state["done"]},{len(paras)},{state["failed"]},{state["cached"]})')
                     await queue.put('<script>' + ';'.join(pieces) + '</script>')
             except UnknownProviderError as e:

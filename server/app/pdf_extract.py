@@ -253,6 +253,13 @@ class FigureCrop:
 # and the bare leader fragments pdfminer pulls as their own LTTextBox.
 _TOC_DOT_LEADER_RE = re.compile(r"\.\s\.\s\.\s\.\s\.")
 
+# pdfminer's notation for glyphs it couldn't map to a Unicode character —
+# usually because the embedded font has no /ToUnicode CMap. They show up as
+# "(cid:12) (cid:34) ..." sequences in the extracted text. They're untranslatable
+# noise (the model just echoes them) and pollute the bilingual view, so we
+# drop any paragraph that's mostly these markers.
+_CID_RE = re.compile(r"\(cid:\d+\)")
+
 # Math-italic Unicode block — used when LaTeX is rendered to PDF, the variable
 # names come out as glyphs in this block (e.g., "𝐶𝑎 = 𝐻 · 𝑊 𝑎𝐾𝑉").
 # Only paragraphs that are mostly these glyphs (no surrounding prose) are
@@ -277,6 +284,26 @@ def _is_toc_paragraph(text: str) -> bool:
     if _TOC_DOT_LEADER_RE.search(t):
         return True
     return False
+
+
+def _is_cid_noise(text: str) -> bool:
+    """Detect paragraphs dominated by pdfminer's "(cid:N)" placeholders.
+
+    A glyph that pdfminer couldn't map to Unicode comes out as the literal
+    string "(cid:12)" etc. — translating these produces nonsense; the user
+    can read the same content from the figure-crop image / original PDF if
+    they need it. Drop when ≥ 30% of the paragraph's chars are inside cid
+    markers, or when there are 3+ markers and barely any other content.
+    """
+    if "(cid:" not in text:
+        return False
+    matches = _CID_RE.findall(text)
+    if not matches:
+        return False
+    cid_chars = sum(len(m) for m in matches)
+    return (cid_chars / max(1, len(text)) >= 0.3) or (
+        len(matches) >= 3 and len(text.strip()) - cid_chars < 20
+    )
 
 
 def _is_pure_equation(text: str) -> bool:
@@ -325,7 +352,7 @@ def detect_noise_paragraphs(paras: list[Paragraph]) -> set[int]:
         if _is_toc_paragraph(p.text):
             drop.add(i)
             toc_per_page[p.page] = toc_per_page.get(p.page, 0) + 1
-        elif _is_pure_equation(p.text):
+        elif _is_pure_equation(p.text) or _is_cid_noise(p.text):
             drop.add(i)
 
     # Second pass: TOC-page detection. Threshold tuned conservative — a real
