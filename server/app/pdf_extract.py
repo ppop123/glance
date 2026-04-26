@@ -217,10 +217,19 @@ def _is_math_italic_char(c: str) -> bool:
 
 
 _DISPLAY_EQ_FOLLOWUP = re.compile(r":\s*$")
-# Previous paragraph ends mid-sentence: no period/?/! terminator, just a
-# comma / semicolon / colon. The follow-up almost always continues the
-# same thought.
+# Previous paragraph ends mid-sentence — comma / semicolon / colon
+# ("...foo, " | "...foo; "). Almost always means the next block is a
+# continuation, not a new paragraph.
 _MID_SENTENCE_END = re.compile(r"[,;]\s*$")
+# Previous paragraph ends with an equation number "...(22)" with no
+# trailing sentence terminator. fitz extracts numbered display equations
+# as their own block; the prose explaining them ("Through this
+# compression operation, HCA compresses ...") lands in the next block.
+_INLINE_EQ_NUMBER_END = re.compile(r"\(\d+\)\s*$")
+# Mid-sentence end candidates that signal "this paragraph isn't done":
+# any of ",", ";", ":", or "(N)" equation number, EXCLUDING bullet /
+# heading patterns that legitimately end without a sentence terminator.
+_MID_BREAK_END = re.compile(r"(?:[,;:]|\(\d+\))\s*$")
 # Enumeration item start — "(2) secondly,...", "(3)thirdly,...". When
 # the previous paragraph ends mid-sentence with ";" or ",", an
 # enumeration item on the next page is a continuation: a single logical
@@ -328,9 +337,36 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
             and last_prose_idx >= 0
             and bool(_MID_SENTENCE_END.search(merged[last_prose_idx].text))
         )
+        # Generalized "previous paragraph ends mid-sentence" continuation:
+        # the prev block ends with `,` / `;` / `:` or with an inline
+        # equation number `(22)`, which strongly signals the source
+        # paragraph isn't done. Subsumes the enumeration case above plus
+        # other patterns we'd otherwise have to enumerate one-by-one
+        # (numbered-equation followed by "Through this compression
+        # operation, ..."; cross-page paragraph continuation that starts
+        # with a capitalized word; etc.).
+        #
+        # Guards:
+        #   - Only fire if the prev paragraph is real prose. We approximate
+        #     this by length ≥ 60 chars OR contains a sentence period
+        #     anywhere — chart axis labels and other figure-internal
+        #     fragments don't satisfy either.
+        #   - Skip if the prev was the result of a `_NEW_UNIT_PREFIX`
+        #     match (section heading / caption / bullet header), since
+        #     those legitimately end without sentence terminators and
+        #     never carry continuations forward.
+        is_mid_break_cont = False
+        if last_prose_idx >= 0 and not is_enum_cont and not is_display_eq_followup:
+            prev = merged[last_prose_idx]
+            if (
+                bool(_MID_BREAK_END.search(prev.text))
+                and not _NEW_UNIT_PREFIX.match(prev.text)
+                and (len(prev.text) >= 60 or "." in prev.text)
+            ):
+                is_mid_break_cont = True
         if last_prose_idx >= 0 and (
             is_math_cont or is_lowercase_cont or is_math_italic_cont
-            or is_display_eq_followup or is_enum_cont
+            or is_display_eq_followup or is_enum_cont or is_mid_break_cont
         ):
             target = merged[last_prose_idx]
             merged[last_prose_idx] = Paragraph(
