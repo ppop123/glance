@@ -155,15 +155,27 @@ _NEW_UNIT_PREFIX = re.compile(
 )
 
 
+def _is_math_italic_char(c: str) -> bool:
+    """Unicode mathematical-italic blocks (U+1D400..U+1D7FF) plus the
+    standalone ℎ (U+210E PLANCK CONSTANT, which LaTeX renders for italic h).
+    A paragraph starting with one of these is almost always a math
+    expression that continues from the previous paragraph — typically a
+    variable name like 𝑔 / 𝑑 / 𝑛 with a punctuation right after."""
+    if not c:
+        return False
+    return c == "ℎ" or "\U0001D400" <= c <= "\U0001D7FF"
+
+
 def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
-    """Stitch back fragments that pdfminer separated into different LTTextBoxes
-    but that visually + semantically belong together: equations split across
-    boxes, prose mid-sentence carrying onto the next box, bullets interrupted
-    by an inline figure caption, etc.
+    """Stitch back fragments that the layout extractor separated into
+    different blocks but that visually + semantically belong together:
+    equations split across blocks, prose mid-sentence carrying onto the
+    next block, bullets interrupted by an inline figure caption, etc.
 
     Strategy: keep an index pointer to the last "ordinary prose" paragraph
     we appended. When we see a paragraph whose first non-whitespace char is
-    LOWERCASE (almost never starts a fresh sentence) or a math operator /
+    LOWERCASE (almost never starts a fresh sentence), a math-italic letter
+    (variable continuing from a previous equation), or a math operator /
     closing bracket, merge it into THAT pointer rather than the immediate
     previous paragraph — so a Figure caption sandwiched between two halves
     of a bullet doesn't split the bullet.
@@ -184,7 +196,8 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
         first_real = p.text.lstrip()[:1]
         is_math_cont = bool(_MATH_CONTINUATION.match(p.text))
         is_lowercase_cont = bool(first_real) and first_real.islower() and first_real.isascii()
-        if last_prose_idx >= 0 and (is_math_cont or is_lowercase_cont):
+        is_math_italic_cont = _is_math_italic_char(first_real)
+        if last_prose_idx >= 0 and (is_math_cont or is_lowercase_cont or is_math_italic_cont):
             target = merged[last_prose_idx]
             merged[last_prose_idx] = Paragraph(
                 page=target.page, text=f"{target.text} {p.text}",
