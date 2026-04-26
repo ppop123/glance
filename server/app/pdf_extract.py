@@ -121,7 +121,18 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
 
                 for chunk in re.split(r"\n\s*\n+", raw):
                     t = _normalize(chunk)
-                    if not t or len(t) < MIN_PARA_CHARS:
+                    if not t:
+                        continue
+                    # MIN_PARA_CHARS drops typical noise (axis labels, page
+                    # numbers). But fitz extracts the numerator and
+                    # denominator of a display fraction as separate blocks
+                    # ("𝐶" + "𝐵 ⩽ 2𝑑 = 6144 FLOPs/Byte") — the 1-char "𝐶"
+                    # gets caught by the MIN_PARA_CHARS filter and the
+                    # equation loses its top-of-fraction. Allow short
+                    # blocks through if they're math-only (math-italic
+                    # letters + math operators + spaces): the merger then
+                    # has a chance to fold them into the surrounding prose.
+                    if len(t) < MIN_PARA_CHARS and not _is_math_only_fragment(t):
                         continue
                     if t in junk_lines:
                         continue
@@ -142,28 +153,103 @@ def extract_paragraphs(pdf_bytes: bytes) -> list[Paragraph]:
 
 # Lines starting with these chars are almost always continuations of a
 # preceding expression or list, not the start of a fresh thought. Math
-# operators, closing brackets, conjunctions in lowercase — never the start
-# of a new sentence in well-edited prose.
-_MATH_CONTINUATION = re.compile(r"^[\s]*[)\]}+,;=·×→←↔≈≤≥<>·•∈∉⊂⊆∩∪]")
+# operators, closing brackets, conjunctions — never the start of a new
+# sentence in well-edited prose.
+#
+# Note: bullet markers (• ◦ ▪ ▫ ■ □) are intentionally NOT in here even
+# though they look like math glyphs — they introduce a NEW bullet item,
+# not a continuation. They live in `_NEW_UNIT_PREFIX` instead.
+_MATH_CONTINUATION = re.compile(r"^[\s]*[)\]}+,;=·×→←↔≈≤≥<>∈∉⊂⊆∩∪]")
 # Lines ending without one of these terminators MIGHT be continuations.
 _TERMINATOR_RE = re.compile(r"[.!?。！？:：]\s*[\"”')\]]?\s*$")
-# Caption / heading prefixes — these are NEW units, never continuations.
+# Caption / heading / bullet prefixes — these are NEW units that never
+# absorb continuations from the previous block, and never act as the
+# "prose target" for a following continuation either.
 _NEW_UNIT_PREFIX = re.compile(
     r"^(?:Figure|Fig\.|Table|Algorithm|Equation|Eq\.|Lemma|Theorem|Corollary|Proposition|Definition|Remark|"
     r"\d+(?:\.\d+)*\s+[A-Z]|"  # "3.1 Introduction"
-    r"图\s*\d|表\s*\d|算法\s*\d|定理|引理|推论|命题|定义|备注)"
+    r"图\s*\d|表\s*\d|算法\s*\d|定理|引理|推论|命题|定义|备注|"
+    r"[•◦▪▫■□]\s)"  # bullet markers (each starts a new list item)
 )
 
 
+_MATH_ONLY_CHARS = set("=+-*/()[]{}.,;:^_<>≤≥⩽⩾≠≈→←↔∈∉⊂⊆∩∪∑∏∫∂×÷·∗⊙±")
+
+
+def _is_math_only_fragment(text: str) -> bool:
+    """A short text consisting solely of math-italic letters + math
+    operators + whitespace. Used to keep display-fraction halves alive
+    past the MIN_PARA_CHARS filter so the merger can recombine them with
+    their introducing prose."""
+    has_math_letter = False
+    for c in text:
+        if c.isspace() or c in _MATH_ONLY_CHARS or c.isdigit():
+            continue
+        if "\U0001D400" <= c <= "\U0001D7FF" or c == "ℎ":
+            has_math_letter = True
+            continue
+        return False
+    return has_math_letter
+
+
 def _is_math_italic_char(c: str) -> bool:
-    """Unicode mathematical-italic blocks (U+1D400..U+1D7FF) plus the
-    standalone ℎ (U+210E PLANCK CONSTANT, which LaTeX renders for italic h).
-    A paragraph starting with one of these is almost always a math
-    expression that continues from the previous paragraph — typically a
-    variable name like 𝑔 / 𝑑 / 𝑛 with a punctuation right after."""
+    """Lowercase Unicode mathematical-italic letter (U+1D400..U+1D7FF, with
+    Unicode category 'Ll') or the standalone ℎ (U+210E PLANCK CONSTANT,
+    which LaTeX renders for italic h).
+
+    A paragraph starting with a math-italic LOWERCASE letter is almost
+    always a math expression that continues from the previous paragraph —
+    typically a variable name like 𝑔 / 𝑑 / 𝑛 with a punctuation right
+    after.
+
+    UPPERCASE math-italic letters are explicitly NOT counted here:
+    display equations frequently start with one (𝐶/𝐵 fraction, 𝑋𝑙+1 = ...),
+    and merging those into the surrounding prose loses the equation as a
+    standalone unit."""
     if not c:
         return False
-    return c == "ℎ" or "\U0001D400" <= c <= "\U0001D7FF"
+    if c == "ℎ":
+        return True
+    if "\U0001D400" <= c <= "\U0001D7FF":
+        import unicodedata
+        return unicodedata.category(c) == "Ll"
+    return False
+
+
+_DISPLAY_EQ_FOLLOWUP = re.compile(r":\s*$")
+# Combining-mark / hat / tilde / dot-above / bar prefixes that LaTeX uses
+# to decorate math symbols. A paragraph starting with one of these is
+# almost always the start of a display equation like "˜𝐴𝑙 = α(...)".
+_MATH_ACCENT_PREFIXES = "˜ˆ¯˙˝˚`´"
+
+
+def _starts_with_display_equation(text: str) -> bool:
+    """Best-effort check that a paragraph starts a display math equation:
+    leading char is a math-italic letter or LaTeX accent prefix, AND
+    EITHER there is an `=` / `≤` / `≥` somewhere in the first 80 chars,
+    OR the whole paragraph is short and math-only (a fraction-numerator
+    fragment like just "𝐶" — no equality sign because the equality lives
+    in the denominator block).
+
+    Used together with the "previous paragraph ends with `:`" guard so we
+    only fold an equation into the preceding prose when the prose actually
+    set up the equation. Without that guard we'd over-eagerly merge any
+    standalone math fragment.
+    """
+    t = text.lstrip()
+    first = t[:1]
+    if not first:
+        return False
+    is_math_italic = "\U0001D400" <= first <= "\U0001D7FF"
+    is_accent = first in _MATH_ACCENT_PREFIXES
+    if not (is_math_italic or is_accent):
+        return False
+    has_op = any(op in t[:80] for op in "=⩽⩾≤≥")
+    if has_op:
+        return True
+    # Fraction-numerator special case: short paragraph that is entirely
+    # math-only.
+    return len(t) < 30 and _is_math_only_fragment(t)
 
 
 def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
@@ -174,30 +260,59 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
 
     Strategy: keep an index pointer to the last "ordinary prose" paragraph
     we appended. When we see a paragraph whose first non-whitespace char is
-    LOWERCASE (almost never starts a fresh sentence), a math-italic letter
-    (variable continuing from a previous equation), or a math operator /
-    closing bracket, merge it into THAT pointer rather than the immediate
-    previous paragraph — so a Figure caption sandwiched between two halves
-    of a bullet doesn't split the bullet.
+    LOWERCASE (almost never starts a fresh sentence), a math-italic
+    lowercase letter (variable continuing from a previous equation), a
+    math operator / closing bracket, OR a display-equation start that
+    follows a colon-ending setup sentence ("...this simplifies to:" + math
+    line), merge it into THAT pointer rather than the immediate previous
+    paragraph — so a Figure caption sandwiched between two halves of a
+    bullet doesn't split the bullet.
 
-    Section headings / figure / table captions match `_NEW_UNIT_PREFIX` and
-    are appended unchanged; they don't update the prose pointer. Anything
-    else updates the pointer."""
+    Section headings / figure / table captions / bullet markers match
+    `_NEW_UNIT_PREFIX` and are appended unchanged; they don't update the
+    prose pointer. Anything else updates the pointer."""
     if not paras:
         return paras
     merged: list[Paragraph] = []
     last_prose_idx = -1
+    # Indices in `merged` whose tail is currently in a display-equation
+    # state — i.e., we just folded a math fragment into them. Used to
+    # chain subsequent math fragments (display fractions where fitz
+    # split the numerator and denominator into separate blocks).
+    in_display_eq: set[int] = set()
     for p in paras:
         if _NEW_UNIT_PREFIX.match(p.text):
-            # Headings / captions never absorb continuations and never act
-            # as "prose targets". Just append.
+            # Headings / captions / bullets are NEW units — no merging in,
+            # but they DO become the prose target so a follow-up math
+            # fragment after a bullet that ends with ":" can attach.
             merged.append(p)
+            last_prose_idx = len(merged) - 1
             continue
         first_real = p.text.lstrip()[:1]
         is_math_cont = bool(_MATH_CONTINUATION.match(p.text))
         is_lowercase_cont = bool(first_real) and first_real.islower() and first_real.isascii()
         is_math_italic_cont = _is_math_italic_char(first_real)
-        if last_prose_idx >= 0 and (is_math_cont or is_lowercase_cont or is_math_italic_cont):
+        # Display-equation start ("𝐵⩽2𝑑= 6144 FLOPs/Byte" or
+        # "˜𝐴𝑙= 𝛼pre · ..." right after a bullet/prose ending with ":")
+        # — only merge if the previous block sets up the equation with
+        # a colon-terminated phrase, OR we're already mid-equation
+        # because we just folded the previous fragment in (display-
+        # fraction case: "...this simplifies to:" + "𝐶" + "𝐵⩽..." each
+        # as a separate fitz block). The "in_display_eq" set lets the
+        # chain extend across multiple math fragments.
+        prev_was_setup = (
+            last_prose_idx >= 0
+            and bool(_DISPLAY_EQ_FOLLOWUP.search(merged[last_prose_idx].text))
+        )
+        prev_in_chain = last_prose_idx in in_display_eq
+        is_display_eq_followup = (
+            _starts_with_display_equation(p.text)
+            and (prev_was_setup or prev_in_chain)
+        )
+        if last_prose_idx >= 0 and (
+            is_math_cont or is_lowercase_cont or is_math_italic_cont
+            or is_display_eq_followup
+        ):
             target = merged[last_prose_idx]
             merged[last_prose_idx] = Paragraph(
                 page=target.page, text=f"{target.text} {p.text}",
@@ -206,9 +321,12 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
                 # heuristics (figure-crop matching) anchor to.
                 bbox=target.bbox, page_height=target.page_height,
             )
+            if is_display_eq_followup:
+                in_display_eq.add(last_prose_idx)
         else:
             merged.append(p)
             last_prose_idx = len(merged) - 1
+            in_display_eq.discard(last_prose_idx)  # fresh paragraph, reset state
     return merged
 
 
@@ -568,22 +686,27 @@ def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[i
             # 6pt-tall axis label right above the caption, leaving a 12pt
             # crop that contains nothing useful.
             #
-            # Width filter: a block is only used as an anchor when it
-            # spans ≥ 50% of the page's widest extent. Real paragraphs
-            # easily clear that bar; axis labels and individual data
-            # points don't.
+            # Anchor filter: a block is only used as the figure-region's
+            # top boundary when it spans ≥ 50% of the page's widest extent
+            # AND is multi-line (height > 15pt). Real prose paragraphs
+            # easily clear both; chart legends ("DeepSeek-V4-Pro-Max
+            # Claude-Opus-4.6-Max ...") are wide but single-line, and
+            # axis labels are narrow.
             #
-            # Once the figure region is bounded, we also DROP every text
-            # block that sits inside it from the translation pipeline —
-            # otherwise "0.4", "DeepSeek-V4-Pro", "Token Position (K)" each
-            # become their own translated <article>, polluting the
-            # bilingual reading flow with chart label fragments.
+            # Once the figure region is bounded, we DROP every NARROW
+            # text block whose bbox center lies inside it from the
+            # translation pipeline — otherwise "0.4", "DeepSeek-V4-Pro",
+            # "Token Position (K)" each become their own translated
+            # <article>, polluting the bilingual reading flow. Center-
+            # based check is used (vs full containment) because vertical
+            # axis labels straddle the boundary by design.
             page_boxes = by_page.get(p.page, [])
             page_max_width = max(
                 (q.bbox[2] - q.bbox[0] for _, q in page_boxes),
                 default=cap_x1 - cap_x0,
             )
             min_anchor_width = page_max_width * 0.5
+            min_anchor_height = 15.0
 
             nearest_y0 = page_h
             nearest_dist = float("inf")
@@ -595,25 +718,36 @@ def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[i
                     continue  # below the caption, ignore
                 if (qx1 - qx0) < min_anchor_width:
                     continue  # narrow → likely a figure-internal label
+                if (qy1 - qy0) < min_anchor_height:
+                    continue  # single-line → likely a chart legend
                 dist = qy0 - cap_y1
                 if dist < nearest_dist:
                     nearest_dist = dist
                     nearest_y0 = qy0
             pdf_top = nearest_y0
             pdf_bottom = cap_y1
-            # Drop every (narrow) text block inside the figure region from
-            # the translation pipeline — but never another Figure/Table
-            # caption, since that's its OWN bilingual unit and needs its
-            # own translation. Wide blocks (paragraphs / headings) inside
-            # this region are rare; the strict-inequality bbox test below
-            # filters them out alongside the anchor itself.
+            # Drop every NARROW text block whose center lies inside the
+            # figure region — these are chart axis labels, legends, and
+            # data values. Center-based check tolerates vertical labels
+            # whose bbox straddles the figure boundary. Wide multi-line
+            # blocks inside this region are real paragraphs we want to
+            # keep (rare on figure pages but possible). Captions are
+            # never dropped — they're their own bilingual unit.
             for qi, q in page_boxes:
                 if q is p or q.bbox is None:
                     continue
                 if _FIGURE_CAPTION_RE.match(q.text):
                     continue
                 qx0, qy0, qx1, qy1 = q.bbox
-                if qy0 >= cap_y1 and qy1 <= pdf_top:
+                qy_center = (qy0 + qy1) / 2
+                # Inside the figure's y-range (any overlap with the
+                # caption-to-anchor band).
+                if not (cap_y1 <= qy_center <= pdf_top):
+                    continue
+                # Drop if narrow OR single-line — the hallmarks of chart
+                # text. A wide multi-line block in here would be a real
+                # paragraph (preserved).
+                if (qx1 - qx0) < min_anchor_width or (qy1 - qy0) < min_anchor_height:
                     drop.add(qi)
 
         crops.append(FigureCrop(
