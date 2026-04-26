@@ -217,6 +217,15 @@ def _is_math_italic_char(c: str) -> bool:
 
 
 _DISPLAY_EQ_FOLLOWUP = re.compile(r":\s*$")
+# Previous paragraph ends mid-sentence: no period/?/! terminator, just a
+# comma / semicolon / colon. The follow-up almost always continues the
+# same thought.
+_MID_SENTENCE_END = re.compile(r"[,;]\s*$")
+# Enumeration item start — "(2) secondly,...", "(3)thirdly,...". When
+# the previous paragraph ends mid-sentence with ";" or ",", an
+# enumeration item on the next page is a continuation: a single logical
+# paragraph spanning a page boundary that fitz extracted as two blocks.
+_ENUM_CONTINUATION = re.compile(r"^\s*\(\d+\)\s*[a-z]")
 # Combining-mark / hat / tilde / dot-above / bar prefixes that LaTeX uses
 # to decorate math symbols. A paragraph starting with one of these is
 # almost always the start of a display equation like "˜𝐴𝑙 = α(...)".
@@ -309,9 +318,19 @@ def _merge_continuation_fragments(paras: list[Paragraph]) -> list[Paragraph]:
             _starts_with_display_equation(p.text)
             and (prev_was_setup or prev_in_chain)
         )
+        # Enumeration item ("(2) secondly,...", "(3) thirdly,...") that
+        # continues an enumeration started in the previous paragraph,
+        # which ended mid-sentence (";" or ","). This typically happens
+        # when the source's enumeration spans a page boundary and fitz
+        # extracts each page's slice as a separate block.
+        is_enum_cont = (
+            bool(_ENUM_CONTINUATION.match(p.text))
+            and last_prose_idx >= 0
+            and bool(_MID_SENTENCE_END.search(merged[last_prose_idx].text))
+        )
         if last_prose_idx >= 0 and (
             is_math_cont or is_lowercase_cont or is_math_italic_cont
-            or is_display_eq_followup
+            or is_display_eq_followup or is_enum_cont
         ):
             target = merged[last_prose_idx]
             merged[last_prose_idx] = Paragraph(
