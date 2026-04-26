@@ -211,9 +211,22 @@ def chunks_of(paras: list[Paragraph], size: int) -> Iterator[list[Paragraph]]:
         yield paras[i:i + size]
 
 
-# Captions that are followed by an actual figure on the page above them.
+# Captions for figures or tables. We require a separator (`|`, `│`, `:`, `.`)
+# after the number so we don't mis-classify body sentences like "Table 13
+# presents the creative writing comparison..." as captions.
+# Numbers can be multi-digit (Table 11, 12, ...) and may be sub-numbered
+# ("Figure 2.3") in some venues, so allow `\d+(?:\.\d+)?`.
 _FIGURE_CAPTION_RE = re.compile(
-    r"^(?:Figure|Fig\.|Table|图\s*\d|表\s*\d)\s*\d", re.IGNORECASE,
+    r"^(?:Figure|Fig\.|Table|Tab\.|图|表)\s*\d+(?:\.\d+)?\s*[|│:.]",
+    re.IGNORECASE,
+)
+
+# Subset matching ONLY tables. Used to flip the crop direction (look BELOW
+# the caption, not above) since academic-paper convention is caption-above-
+# table — the inverse of figures, where caption sits below the visual.
+_TABLE_CAPTION_RE = re.compile(
+    r"^(?:Table|Tab\.|表)\s*\d+(?:\.\d+)?\s*[|│:.]",
+    re.IGNORECASE,
 )
 
 
@@ -230,66 +243,269 @@ class FigureCrop:
     page_height: float
 
 
-def detect_figure_crops(paras: list[Paragraph]) -> list[FigureCrop]:
-    """Walk the extracted paragraphs and, for each figure caption, compute
-    a crop region pointing at the figure visually above the caption on the
-    same page. Returns crops in caption-discovery order.
+# ── Noise filters: paragraphs that aren't worth translating ──────────────
+# Same theme as detect_figure_crops's drop set: pdfminer extracts everything
+# the page draws as text, including layout artifacts that produce gibberish
+# under translation. We surface a separate noise set so main.py can prune
+# them BEFORE cache lookup / LLM batches.
 
-    The figure region is bounded by:
-      - top    : bottom of the nearest LTTextBox immediately ABOVE the caption
-                 on the same page (or page top if none)
-      - bottom : top of the caption itself
-    For PDF coords (origin = bottom-left), "above" = higher y."""
-    out: list[FigureCrop] = []
-    # Group paragraphs by page for fast same-page neighbor lookup.
-    by_page: dict[int, list[Paragraph]] = {}
-    for p in paras:
+# 5+ consecutive ". . . . ." dot-leader pairs — table-of-contents entries
+# and the bare leader fragments pdfminer pulls as their own LTTextBox.
+_TOC_DOT_LEADER_RE = re.compile(r"\.\s\.\s\.\s\.\s\.")
+
+# Math-italic Unicode block — used when LaTeX is rendered to PDF, the variable
+# names come out as glyphs in this block (e.g., "𝐶𝑎 = 𝐻 · 𝑊 𝑎𝐾𝑉").
+# Only paragraphs that are mostly these glyphs (no surrounding prose) are
+# treated as pure-equation noise.
+_MATH_ITALIC_LOW = "\U0001D400"
+_MATH_ITALIC_HIGH = "\U0001D7FF"
+_COMMON_MATH_OPS = set("+=−×÷·∗∇∈⊂≤≥≠≈→↔∑∏∫∂")
+
+
+def _is_toc_paragraph(text: str) -> bool:
+    """Detect TOC artifacts: pure dot-leaders, or section titles followed
+    by a long dot leader. 5+ alternating ``. .`` pairs is the threshold —
+    body prose effectively never hits this."""
+    t = text.strip()
+    if not t:
+        return False
+    stripped = re.sub(r"[\s\.]", "", t)
+    # Pure dots (possibly with whitespace) — pdfminer extracts the leader
+    # column of the TOC as its own LTTextBox.
+    if not stripped and t.count(".") >= 5:
+        return True
+    if _TOC_DOT_LEADER_RE.search(t):
+        return True
+    return False
+
+
+def _is_pure_equation(text: str) -> bool:
+    """Standalone equation paragraph: very few ASCII letters + a meaningful
+    chunk of math glyphs (math-italic block or common operators). Inline math
+    inside prose is fine — only when the WHOLE paragraph is math do we drop
+    it (translating "𝜋𝐸𝑖 ( 𝑦𝑡 | 𝑥,𝑦<𝑡 )" produces nonsense)."""
+    t = text.strip()
+    if len(t) < 5:
+        return False
+    non_ws = [c for c in t if not c.isspace()]
+    if not non_ws:
+        return False
+    ascii_alpha = sum(1 for c in non_ws if c.isalpha() and ord(c) < 128)
+    math_glyphs = sum(
+        1 for c in non_ws
+        if (_MATH_ITALIC_LOW <= c <= _MATH_ITALIC_HIGH) or (c in _COMMON_MATH_OPS)
+    )
+    # "Mostly math" — at least 6 math glyphs, ASCII letters under 30% of
+    # non-whitespace chars.
+    return math_glyphs >= 6 and ascii_alpha < len(non_ws) * 0.3
+
+
+def detect_noise_paragraphs(paras: list[Paragraph]) -> set[int]:
+    """Return indices into ``paras`` that are content-noise (TOC fragments,
+    pure-equation paragraphs). Caller should drop them from the translation
+    pipeline alongside ``detect_figure_crops``'s in-table cells.
+
+    Two-pass:
+
+      1. Per-paragraph: pure dot-leaders, pure-equation paragraphs.
+      2. Per-page: if ≥ 40% of a page's paragraphs already match the TOC
+         pattern (lots of "Section Title . . . ." entries), the whole page
+         is a TOC — drop every paragraph on it. This catches TOC entries
+         whose dot leaders ended up in a separate LTTextBox so the title
+         column alone ("2.2 Manifold-Constrained Hyper-Connections") didn't
+         trigger the per-paragraph rule.
+    """
+    drop: set[int] = set()
+
+    # First pass.
+    toc_per_page: dict[int, int] = {}
+    total_per_page: dict[int, int] = {}
+    for i, p in enumerate(paras):
+        total_per_page[p.page] = total_per_page.get(p.page, 0) + 1
+        if _is_toc_paragraph(p.text):
+            drop.add(i)
+            toc_per_page[p.page] = toc_per_page.get(p.page, 0) + 1
+        elif _is_pure_equation(p.text):
+            drop.add(i)
+
+    # Second pass: TOC-page detection. Threshold tuned conservative — a real
+    # content page should never have 40%+ paragraphs matching the dot-leader
+    # pattern, so this only fires on actual TOC pages.
+    toc_pages = {
+        page for page, n_total in total_per_page.items()
+        if n_total >= 5 and toc_per_page.get(page, 0) / n_total >= 0.4
+    }
+    if toc_pages:
+        for i, p in enumerate(paras):
+            if p.page in toc_pages:
+                drop.add(i)
+
+    return drop
+
+
+def detect_figure_crops(paras: list[Paragraph]) -> tuple[list[FigureCrop], set[int]]:
+    """Walk the extracted paragraphs and, for each Figure / Table caption,
+    compute a crop region around the visual content the caption refers to.
+    Returns ``(crops, drop_para_indices)``:
+
+      - ``crops``: list[FigureCrop], one per caption (degenerate ones still
+        emitted so callers can pair by index); ordered by caption discovery.
+      - ``drop_para_indices``: set of indices into ``paras`` that fall inside
+        a *table* region — i.e., they are cell text the caller should drop
+        from translation. The table image already contains them visually;
+        re-translating multi-column row fragments produces gibberish (cell
+        shards interleaved with rotated header letters etc.).
+
+    Direction depends on caption type:
+
+      - **Figures** (and 图 N): caption sits *below* the figure → look UP.
+        The crop is the empty space above the caption, bounded by the
+        nearest text-box above (its bottom = the figure's top edge).
+
+      - **Tables** (and 表 N): caption sits *above* the table → look DOWN.
+        Walk through cells using a "y-coverage" rule that handles
+        side-by-side columns (their LTTextBoxes overlap in y) and stops at
+        the first big visual break (gap > walk_threshold) or any
+        obviously-prose paragraph.
+
+    PDF coords: origin = bottom-left, so "above" = larger y, "below" =
+    smaller y, and ``box.y1 > box.y0``.
+    """
+    crops: list[FigureCrop] = []
+    drop: set[int] = set()
+    # Group paragraphs by page, carrying the original index so the drop set
+    # can refer back to ``paras``.
+    by_page: dict[int, list[tuple[int, Paragraph]]] = {}
+    for i, p in enumerate(paras):
         if p.bbox is not None and p.page_height is not None:
-            by_page.setdefault(p.page, []).append(p)
+            by_page.setdefault(p.page, []).append((i, p))
 
-    for p in paras:
+    # Heuristic constants. Tuned on multi-column tables in the DeepSeek-V4
+    # paper (Tables 5, 6, 9 — narrow cells, overlapping columns, varied row
+    # heights). If you change these, eyeball the rendered crops on a paper
+    # with both wide and narrow tables before shipping.
+    INITIAL_GAP_MAX = 80.0   # max gap from caption to first cell (for tables)
+    # Width-based prose detection: a box wider than this fraction of the
+    # widest box on the page is treated as a body paragraph, not a table
+    # cell. Pdfminer often merges all cells in one COLUMN into a single
+    # LTTextBox (139pt-tall column of numbers), so a height filter can't
+    # distinguish "tall column of cells" from "tall prose block" — but
+    # width can: cells/columns are narrow, body prose spans full text width.
+    PROSE_WIDTH_FRAC = 0.70
+
+    for cap_idx, p in enumerate(paras):
         if not p.bbox or not p.page_height:
             continue
         if not _FIGURE_CAPTION_RE.match(p.text):
             continue
         cap_x0, cap_y0, cap_x1, cap_y1 = p.bbox
-        # Find the nearest text box ABOVE the caption (PDF y0 > caption.y1).
-        # Use its bottom (y0) as our crop's top. If nothing above, page top.
         page_h = p.page_height
-        above_floor = page_h
-        nearest_y0 = page_h
-        nearest_dist = float("inf")
-        for q in by_page.get(p.page, []):
-            if q is p or not q.bbox:
-                continue
-            qx0, qy0, qx1, qy1 = q.bbox
-            if qy0 < cap_y1:           # not above the caption
-                continue
-            dist = qy0 - cap_y1
-            if dist < nearest_dist:
-                nearest_dist = dist
-                nearest_y0 = qy0
-        # Crop spans from caption.y1 up to nearest_y0. If nothing above on the
-        # same page, span up to page top so a page-top figure still gets cropped.
-        crop_top = nearest_y0
-        crop_bottom = cap_y1
-        # Caption prefix used as a stable handle for the matching code in
-        # main.py to find the right caption paragraph.
+        cap_height = cap_y1 - cap_y0
+        is_table = bool(_TABLE_CAPTION_RE.match(p.text))
+        walk_threshold = max(cap_height * 1.5, 20.0)
+
         m = _FIGURE_CAPTION_RE.match(p.text)
         prefix = m.group(0) if m else p.text[:12]
-        # Always emit one entry per caption — including degenerate "no figure
-        # really here" cases — so callers can pair captions to crops by index
-        # without being thrown off by skips. render_figure_crops returns empty
-        # bytes for tiny / inverted ranges and main.py treats that as
-        # "no inline figure for this caption".
-        out.append(FigureCrop(
+
+        if is_table:
+            # ── Table: caption above, cells below. Walk DOWN. ──────────────
+            page_boxes = by_page.get(p.page, [])
+            # Compute the page's widest paragraph extent for the prose-width
+            # cutoff. Cap-width is usually close to this but not always
+            # (single-column table-only pages have a short caption).
+            page_max_width = max(
+                (q.bbox[2] - q.bbox[0] for _, q in page_boxes),
+                default=cap_x1 - cap_x0,
+            )
+            prose_width = PROSE_WIDTH_FRAC * page_max_width
+
+            below = [
+                (qi, q) for qi, q in page_boxes
+                if q is not p and q.bbox is not None and q.bbox[3] <= cap_y0
+            ]
+            # Closest below first: largest y1 (top edge nearest caption).
+            below.sort(key=lambda qi_q: -qi_q[1].bbox[3])
+
+            def _is_prose(box) -> bool:
+                bx0, _by0, bx1, _by1 = box.bbox
+                return (bx1 - bx0) > prose_width
+
+            if not below:
+                # Caption with nothing below it (page-end caption?). Degenerate.
+                pdf_top = cap_y0
+                pdf_bottom = cap_y0
+            else:
+                first_qi, first_q = below[0]
+                first_y0, first_y1 = first_q.bbox[1], first_q.bbox[3]
+                first_gap = cap_y0 - first_y1
+                if first_gap > INITIAL_GAP_MAX or _is_prose(first_q):
+                    # Nothing table-shaped near the caption → degenerate crop.
+                    pdf_top = cap_y0
+                    pdf_bottom = cap_y0
+                else:
+                    # Accumulate cells. lowest_y0 tracks the bottom of all the
+                    # cells we've grouped so far. Side-by-side columns have
+                    # overlapping y ranges; the "next box's top must be within
+                    # walk_threshold of accumulated bottom" rule handles that
+                    # naturally.
+                    #
+                    # When we hit a prose paragraph below, extend pdf_bottom
+                    # down to its TOP edge (not the last cell's bottom). This
+                    # captures score grids / charts that pdfminer renders as
+                    # graphics (so we don't see them as boxes), but which
+                    # visually live in the gap between the last extracted cell
+                    # and the next prose paragraph. Capped at PROSE_REACH so
+                    # an isolated cell row followed by far-below prose doesn't
+                    # over-extend.
+                    PROSE_REACH = 250.0
+                    pdf_top = cap_y0
+                    lowest_y0 = first_y0
+                    pdf_bottom = first_y0  # default: stop at last extracted cell
+                    drop.add(first_qi)
+                    for qi, q in below[1:]:
+                        qy0, qy1 = q.bbox[1], q.bbox[3]
+                        if _is_prose(q):
+                            # Reach down to top-of-prose if it's close enough.
+                            if (lowest_y0 - qy1) <= PROSE_REACH:
+                                pdf_bottom = qy1
+                            else:
+                                pdf_bottom = lowest_y0
+                            break
+                        if qy1 < lowest_y0 - walk_threshold:
+                            pdf_bottom = lowest_y0
+                            break  # clean visual break = end of table
+                        lowest_y0 = min(lowest_y0, qy0)
+                        pdf_bottom = lowest_y0
+                        drop.add(qi)
+        else:
+            # ── Figure: caption below, image above. Walk UP. ───────────────
+            # (Original behaviour; preserves figures-with-caption-below-image
+            # convention from prior commits. We keep the same single-anchor
+            # rule because between figure top and prose above it there's no
+            # text for pdfminer to extract — one above-anchor is enough.)
+            nearest_y0 = page_h
+            nearest_dist = float("inf")
+            for qi, q in by_page.get(p.page, []):
+                if q is p or q.bbox is None:
+                    continue
+                qy0 = q.bbox[1]
+                if qy0 < cap_y1:
+                    continue  # below the caption, ignore
+                dist = qy0 - cap_y1
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_y0 = qy0
+            pdf_top = nearest_y0
+            pdf_bottom = cap_y1
+
+        crops.append(FigureCrop(
             page=p.page,
             caption_text_prefix=prefix,
-            pdf_top=crop_top,
-            pdf_bottom=crop_bottom,
+            pdf_top=pdf_top,
+            pdf_bottom=pdf_bottom,
             page_height=page_h,
         ))
-    return out
+    return crops, drop
 
 
 # ── Page rasterization ────────────────────────────────────────────────
